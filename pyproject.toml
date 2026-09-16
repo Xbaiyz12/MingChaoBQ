@@ -1,0 +1,9 @@
+[project]
+name = "MingChaoBQ"
+version = "1.0.0"
+description = "鸣潮表情包插件 - 支持按画师/角色/表情名检索"
+requires-python = ">=3.8"
+dependencies = [
+    "aiofiles",
+    "Pillow",
+]
