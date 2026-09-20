@@ -1,9 +1,13 @@
 import hashlib
 import json
+import hashlib
+import json
 import random
+from pathlib import Path
 from pathlib import Path
 
 from gsuid_core.bot import Bot
+from gsuid_core.data_store import get_res_path
 from gsuid_core.data_store import get_res_path
 from gsuid_core.models import Event
 from gsuid_core.sv import SV
@@ -11,8 +15,9 @@ from gsuid_core.segment import MessageSegment
 
 from .utils.paths import BQ_ROOT
 from .index_generator import load_index, generate_index, save_index
-from .whitelist import is_group_allowed, get_group_role, set_group_role
+from .whitelist import is_group_allowed, get_group_role, set_group_role, get_group_role, set_group_role
 from .mingchao_config import get_config, set_config
+from .api_sync import _get_client, fetch_and_save, set_config
 from .api_sync import _get_client, fetch_and_save
 
 mcbq_sv = SV("鸣潮表情包", area="ALL", pm=6)
@@ -22,7 +27,13 @@ _WW_ALIAS_FILE = get_res_path() / "XutheringWavesUID" / "alias" / "char_alias.js
 
 
 # ==================== 工具函数 ====================
+_WW_ALIAS_FILE = get_res_path() / "XutheringWavesUID" / "alias" / "char_alias.json"
 
+
+# ==================== 工具函数 ====================
+
+async def _send_pic(bot: Bot, pic_info: dict):
+    """发送本地图片，根据 source 决定标注格式"""
 async def _send_pic(bot: Bot, pic_info: dict):
     """发送本地图片，根据 source 决定标注格式"""
     full_path = BQ_ROOT / pic_info["file"]
@@ -31,10 +42,14 @@ async def _send_pic(bot: Bot, pic_info: dict):
         return
 
     artist = pic_info.get("_artist", "")
+    artist = pic_info.get("_artist", "")
     char = pic_info.get("_char", "未知角色")
     emotion = pic_info.get("emotion", "")
 
     if pic_info.get("source") == "api" or artist == "API":
+        label = f"【API】{char}"
+    else:
+        if pic_info.get("source") == "api" or artist == "API":
         label = f"【API】{char}"
     else:
         label = f"【{artist}】{char} · {emotion}"
@@ -93,7 +108,63 @@ def _load_ww_alias() -> dict:
             data = json.load(f)
         for real_name, aliases in data.items():
             if not isinstance(aliases, list):
+async def _try_api(role: str = "") -> dict | None:
+    """从 API 获取一张，返回 {"url", "name", "role"} 或 None"""
+    if not get_config("mcbq_api_enable"):
+        return None
+    return await fetch_and_save(role=role)
+
+
+async def _send_from_api(bot: Bot, data: dict):
+    """发送一张 API 来源的图。优先用本地缓存；否则现下载到本地再发"""
+    label = f"【API】{data['role']}"
+
+    # 1. 如果 fetch_and_save 已经下载并返回了 saved_path
+    saved_path = data.get("saved_path")
+    if saved_path and Path(saved_path).exists():
+        await bot.send([
+            MessageSegment.text(label),
+            MessageSegment.image(Path(saved_path)),
+        ])
+        return
+
+    # 2. 兜底：现下载一次到 cache 目录再发
+    import time
+    cache_dir = BQ_ROOT / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    suffix = data.get("suffix", ".gif")
+    temp_path = cache_dir / f"api_{int(time.time() * 1000)}{suffix}"
+
+    client = _get_client()
+    ok = await client.download(data["url"], temp_path)
+    if ok and temp_path.exists():
+        await bot.send([
+            MessageSegment.text(label),
+            MessageSegment.image(temp_path),
+        ])
+        return
+
+    await bot.send(label + "\n（图片下载失败）")
+
+
+def _load_ww_alias() -> dict:
+    result = {}
+    if not _WW_ALIAS_FILE.exists():
+        return result
+    try:
+        with open(_WW_ALIAS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for real_name, aliases in data.items():
+            if not isinstance(aliases, list):
                 continue
+            for alias in aliases:
+                alias = str(alias).strip()
+                if alias:
+                    result[alias] = real_name
+            result.setdefault(real_name, real_name)
+    except Exception:
+        pass
+    return result
             for alias in aliases:
                 alias = str(alias).strip()
                 if alias:
@@ -106,6 +177,7 @@ def _load_ww_alias() -> dict:
 
 def _get_alias_map() -> dict:
     result = _load_ww_alias()
+    result = _load_ww_alias()
     raw = get_config("mcbq_char_alias") or []
     for line in raw:
         if ":" not in line:
@@ -115,7 +187,15 @@ def _get_alias_map() -> dict:
         if not real:
             continue
         for alias in aliases_str.split(","):
+        if ":" not in line:
+            continue
+        real, aliases_str = line.split(":", 1)
+        real = real.strip()
+        if not real:
+            continue
+        for alias in aliases_str.split(","):
             alias = alias.strip()
+            if alias:
             if alias:
                 result[alias] = real
     return result
@@ -123,11 +203,14 @@ def _get_alias_map() -> dict:
 
 def _resolve_char_name(keyword: str) -> str:
     return _get_alias_map().get(keyword, keyword)
+    return _get_alias_map().get(keyword, keyword)
 
 
 def _match_artists(index: dict, keyword: str) -> list:
     result = []
     for name in index.keys():
+        if name == "API":
+            continue
         if name == "API":
             continue
         if keyword == name or keyword in name or name in keyword:
@@ -161,6 +244,84 @@ def _match_emotions(index: dict, keyword: str, fuzzy: bool = False) -> list:
                         })
     return results
 
+
+def _collect_all_pics(index: dict, artist: str = None, char: str = None) -> list:
+    """
+    从索引里筛选图片，返回带 _artist / _char / _sub 元信息的列表。
+    artist 或 char 为 None 时不筛选该维度。
+    """
+    results = []
+    for a_name, chars in index.items():
+        if artist and a_name != artist:
+            continue
+        for c_name, subcats in chars.items():
+            if char and c_name != char:
+                continue
+            for sub_name, pics in subcats.items():
+                for pic in pics:
+                    results.append({
+                        **pic,
+                        "_artist": a_name,
+                        "_char": c_name,
+                        "_sub": sub_name,
+                    })
+    return results
+
+
+# ==================== 戳一戳 ====================
+
+@mcbq_sv.on_meta("poke")
+async def on_poke(bot: Bot, ev: Event):
+    target_id = ev.meta_event_data.get("target_id") if ev.meta_event_data else None
+    print(
+        f"[MingChaoBQ poke] 收到事件: bot_self_id={ev.bot_self_id}, "
+        f"target_id={target_id}, group={ev.group_id}"
+    )
+
+    if str(target_id) != str(ev.bot_self_id):
+        print(f"[MingChaoBQ poke] 不是戳我（target={target_id} != self={ev.bot_self_id}），退出")
+        return
+
+    if not is_group_allowed(ev.group_id):
+        print(f"[MingChaoBQ poke] 群 {ev.group_id} 不在白名单或插件总开关关闭，退出")
+        return
+
+    if not get_config("mcbq_poke_enable"):
+        print("[MingChaoBQ poke] 戳一戳功能未开启，退出")
+        return
+
+    if not get_config("mcbq_api_enable"):
+        print("[MingChaoBQ poke] API 优先未开启，走本地索引")
+    else:
+        print("[MingChaoBQ poke] API 优先已开启，尝试从 API 获取")
+
+    group_id = str(ev.group_id)
+    role = get_group_role(group_id)
+    print(f"[MingChaoBQ poke] group_role={role!r}")
+    index = load_index()
+
+    data = await _try_api(role=role or "")
+    print(f"[MingChaoBQ poke] API 返回: {data is not None}")
+
+    if data:
+        await _send_from_api(bot, data)
+        return
+
+    if role:
+        pics = _collect_all_pics(index, char=role)
+        if pics:
+            await _send_pic(bot, random.choice(pics))
+            return
+
+    pics = _collect_all_pics(index)
+    print(f"[MingChaoBQ poke] 本地索引图片数: {len(pics)}")
+    if pics:
+        await _send_pic(bot, random.choice(pics))
+    else:
+        print("[MingChaoBQ poke] 本地索引为空，什么都没发")
+
+
+# ==================== 主处理 ====================
 
 def _collect_all_pics(index: dict, artist: str = None, char: str = None) -> list:
     """
@@ -284,14 +445,29 @@ async def general_handler(bot: Bot, ev: Event):
 
         matched = _match_emotions(index, keyword, fuzzy=False)
         fuzzy = False
+        fuzzy = False
         if not matched:
             matched = _match_emotions(index, keyword, fuzzy=True)
+            fuzzy = True
             fuzzy = True
 
         if not matched:
             await bot.send(f"没有找到表情「{keyword}」。换一个词试试吧。")
             return
 
+        from .utils.image_utils import render_text_to_image
+        lines = []
+        for m in matched:
+            artist = m["_artist"]
+            char = m["_char"]
+            emotion = m["emotion"]
+            if m.get("source") == "api" or artist == "API":
+                lines.append(f"【API】{char} · {emotion}")
+            else:
+                lines.append(f"【{artist}】{char} · {emotion}")
+        title = f"搜索「{keyword}」共 {len(matched)} 个{'（模糊）' if fuzzy else ''}"
+        img_path = render_text_to_image("\n".join(lines), title=title)
+        await bot.send(MessageSegment.image(img_path))
         from .utils.image_utils import render_text_to_image
         lines = []
         for m in matched:
@@ -312,10 +488,15 @@ async def general_handler(bot: Bot, ev: Event):
         if data:
             await _send_from_api(bot, data)
             return
+        data = await _try_api()
+        if data:
+            await _send_from_api(bot, data)
+            return
         pics = _collect_all_pics(index)
         if not pics:
             await bot.send("表情包库是空的，请先运行 bq更新索引。")
             return
+        await _send_pic(bot, random.choice(pics))
         await _send_pic(bot, random.choice(pics))
         return
 
@@ -326,12 +507,30 @@ async def general_handler(bot: Bot, ev: Event):
             if data:
                 await _send_from_api(bot, data)
                 return
+            data = await _try_api()
+            if data:
+                await _send_from_api(bot, data)
+                return
             pics = _collect_all_pics(index)
+            if pics:
+                await _send_pic(bot, random.choice(pics))
             if pics:
                 await _send_pic(bot, random.choice(pics))
             return
 
         matched_chars = _match_chars(index, keyword)
+        matched_artists = _match_artists(index, keyword)
+        matched_emotions = _match_emotions(index, keyword, fuzzy=False)
+        matched_emotions_fuzzy = matched_emotions or _match_emotions(index, keyword, fuzzy=True)
+
+        is_role_keyword = bool(matched_chars)
+
+        if is_role_keyword or (not matched_chars and not matched_artists and not matched_emotions_fuzzy):
+            data = await _try_api(role=keyword)
+            if data:
+                await _send_from_api(bot, data)
+                return
+
         matched_artists = _match_artists(index, keyword)
         matched_emotions = _match_emotions(index, keyword, fuzzy=False)
         matched_emotions_fuzzy = matched_emotions or _match_emotions(index, keyword, fuzzy=True)
@@ -350,6 +549,7 @@ async def general_handler(bot: Bot, ev: Event):
                 pics.extend(_collect_all_pics(index, char=c))
             if pics:
                 await _send_pic(bot, random.choice(pics))
+                await _send_pic(bot, random.choice(pics))
                 return
 
         if matched_artists:
@@ -358,12 +558,16 @@ async def general_handler(bot: Bot, ev: Event):
                 pics.extend(_collect_all_pics(index, artist=a))
             if pics:
                 await _send_pic(bot, random.choice(pics))
+                await _send_pic(bot, random.choice(pics))
                 return
 
         if matched_emotions:
             await _send_pic(bot, random.choice(matched_emotions))
+            await _send_pic(bot, random.choice(matched_emotions))
             return
 
+        if matched_emotions_fuzzy:
+            await _send_pic(bot, random.choice(matched_emotions_fuzzy))
         if matched_emotions_fuzzy:
             await _send_pic(bot, random.choice(matched_emotions_fuzzy))
             return
@@ -400,6 +604,7 @@ async def general_handler(bot: Bot, ev: Event):
     await bot.send("指令格式有误。发送 bq帮助 查看用法。")
 
 
+# ==================== 管理命令 ====================
 # ==================== 管理命令 ====================
 
 @mcbq_admin_sv.on_command("更新索引", to_ai="重新扫描表情包目录并生成索引（仅主人可用）")

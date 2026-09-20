@@ -58,11 +58,13 @@ async def enable_whitelist(bot: Bot, ev: Event):
 
 
 @mcbq_whitelist_sv.on_command("关闭白名单", to_ai="关闭鸣潮表情包插件的群白名单模式")
+@mcbq_whitelist_sv.on_command("关闭白名单", to_ai="关闭鸣潮表情包插件的群白名单模式")
 async def disable_whitelist(bot: Bot, ev: Event):
     set_config("mcbq_whitelist_enable", False)
     await bot.send("鸣潮表情包群白名单已【关闭】，所有群均可使用本插件（黑名单除外）。")
 
 
+@mcbq_whitelist_sv.on_command("添加白名单", to_ai="添加群号到鸣潮表情包白名单")
 @mcbq_whitelist_sv.on_command("添加白名单", to_ai="添加群号到鸣潮表情包白名单")
 async def add_whitelist(bot: Bot, ev: Event):
     group_id = ev.text.strip()
@@ -79,6 +81,7 @@ async def add_whitelist(bot: Bot, ev: Event):
 
 
 @mcbq_whitelist_sv.on_command("移除白名单", to_ai="从鸣潮表情包白名单中移除群号")
+@mcbq_whitelist_sv.on_command("移除白名单", to_ai="从鸣潮表情包白名单中移除群号")
 async def remove_whitelist(bot: Bot, ev: Event):
     group_id = ev.text.strip()
     if not group_id:
@@ -93,6 +96,7 @@ async def remove_whitelist(bot: Bot, ev: Event):
     await bot.send(f"已从白名单中移除群 {group_id}。")
 
 
+@mcbq_whitelist_sv.on_command("查看白名单", to_ai="查看当前鸣潮表情包白名单")
 @mcbq_whitelist_sv.on_command("查看白名单", to_ai="查看当前鸣潮表情包白名单")
 async def list_whitelist(bot: Bot, ev: Event):
     enabled = get_config("mcbq_whitelist_enable")
