@@ -23,9 +23,14 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="允许使用本插件的群号，一行一个",
         data=[],
     ),
+        "mcbq_blacklist": GsListStrConfig(
+        title="群黑名单",
+        desc="禁止使用本插件的群号，一行一个。优先级高于白名单",
+        data=[],
+    ),
     "mcbq_char_alias": GsListStrConfig(
         title="角色别名",
-        desc="给角色添加别名，格式：别名=真名，一行一个。例：小爱=爱弥斯",
+        desc="每行一个角色，格式：角色名:别名1,别名2。例：爱弥斯:小爱,小爱弥斯",
         data=[],
     ),
     # ===== 帮助图素材 =====
@@ -44,60 +49,51 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="帮助图超过此宽度会被等比例缩小，默认1200",
         data="1200",
     ),
-    # ===== API 同步 =====
-    "mcbq_api_url": GsStrConfig(
+    # ===== API =====
+    "mcbq_api_enable": GsBoolConfig(
+        title="启用 API 优先",
+        desc="开启后所有指令优先从 API 获取，失败时回退本地",
+        data=False,
+    ),
+    "mcbq_api_base": GsStrConfig(
         title="API 地址",
-        desc="表情包网站 API 的 base URL，例：https://xxx.com",
-        data="",
+        desc="默认 https://emoji.wuwa.games/apis/api.random-emoji.wuwa.games",
+        data="https://emoji.wuwa.games/apis/api.random-emoji.wuwa.games",
     ),
     "mcbq_api_token": GsStrConfig(
         title="API Token",
-        desc="如果需要认证就填，不需要留空",
+        desc="从表情包网站获取的 Token，用于长期稳定访问",
         data="",
     ),
-    "mcbq_api_list_path": GsStrConfig(
-        title="列表接口路径",
-        desc="拼接在 base URL 后面，例：/api/list 或 /emotions",
-        data="/list",
+    "mcbq_api_random_path": GsStrConfig(
+        title="随机接口路径",
+        desc="拼接在 API 地址后面，默认 /v1alpha1/random",
+        data="/v1alpha1/random",
     ),
-    "mcbq_api_method": GsStrConfig(
-        title="请求方式",
-        desc="GET 或 POST",
-        data="GET",
-    ),
-    "mcbq_api_data_path": GsStrConfig(
-        title="数据数组路径",
-        desc="JSON 里数据数组的位置，用点分隔。例：data 或 data.list。留空则整个响应就是数组",
-        data="",
-    ),
-    "mcbq_api_artist_field": GsStrConfig(
-        title="画师字段名",
-        desc="JSON 里画师名的字段，例：artist",
-        data="artist",
-    ),
-    "mcbq_api_char_field": GsStrConfig(
-        title="角色字段名",
-        desc="JSON 里角色名的字段，例：character",
+    "mcbq_api_character_param": GsStrConfig(
+        title="角色参数名",
+        desc="按角色查询时的参数名，默认 character",
         data="character",
     ),
-    "mcbq_api_name_field": GsStrConfig(
-        title="表情字段名",
-        desc="JSON 里表情名的字段，例：name",
-        data="name",
+    "mcbq_api_save_local": GsBoolConfig(
+        title="API 结果保存到本地",
+        desc="从 API 获取的表情保存到 data/MingChaoBQ/API/角色名/ 下，可去重",
+        data=True,
     ),
-    "mcbq_api_url_field": GsStrConfig(
-        title="图片地址字段名",
-        desc="JSON 里图片 URL 的字段，例：url",
-        data="url",
+    # ===== 戳一戳 =====
+    "mcbq_poke_enable": GsBoolConfig(
+        title="启用戳一戳随机表情",
+        desc="开启后，用户戳机器人会随机发送一张表情",
+        data=True,
     ),
-    "mcbq_api_headers": GsListStrConfig(
-        title="额外请求头",
-        desc="一行一个 Key: Value，例：Referer: https://xxx.com",
+    "mcbq_poke_group_roles": GsListStrConfig(
+        title="群专属戳一戳角色",
+        desc="格式：群号:角色名，一行一个。例：123456789:爱弥斯",
         data=[],
     ),
-    "mcbq_api_sync_hour": GsStrConfig(
-        title="定时同步小时",
-        desc="每天几点自动同步，默认 4 表示凌晨 4 点",
-        data="4",
+    "mcbq_poke_set_pm": GsStrConfig(
+        title="设置戳一戳角色的最低权限",
+        desc="0=主人 1=超级用户 2=群主 3=管理员 6=所有人，默认3",
+        data="3",
     ),
 }
