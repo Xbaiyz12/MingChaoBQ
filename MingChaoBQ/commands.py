@@ -18,8 +18,8 @@ from .utils.cache import new_cache_path
 from .utils.paths import BQ_ROOT
 from .index_generator import load_index, rebuild_index
 from .mingchao_config import get_int, get_bool, set_config, get_str_list
-from .utils.image_utils import render_text_to_image
 from .utils.index_types import Index, PicEntry
+from .utils.render_search import render_emotion_list
 from .utils.render_overview import render_char_list, render_one_artist, render_artist_overview
 from .mingchao_help.get_help import get_help
 
@@ -367,18 +367,7 @@ async def cmd_search(bot: Bot, ev: Event) -> None:
         await bot.send(f"没有找到表情「{keyword}」。换一个词试试吧。")
         return
 
-    lines: list[str] = []
-    for pic in matched:
-        artist = pic.get("_artist", "")
-        char = pic.get("_char", "")
-        emotion = pic["emotion"]
-        if pic.get("source") == "api" or artist == "API":
-            lines.append(f"【API】{char} · {emotion}")
-        else:
-            lines.append(f"【{artist}】{char} · {emotion}")
-
-    title = f"搜索「{keyword}」共 {len(matched)} 个{'（模糊）' if fuzzy else ''}"
-    img_path = await render_text_to_image("\n".join(lines), title=title)
+    img_path = await render_emotion_list(matched, keyword, fuzzy)
     await bot.send(MessageSegment.image(img_path))
 
 
