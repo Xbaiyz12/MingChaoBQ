@@ -45,22 +45,22 @@ def _with_meta(pic: PicEntry, artist: str, char: str, sub: str) -> PicEntry:
 
 
 async def _send_pic(bot: Bot, pic: PicEntry) -> None:
-    """发送本地图片，根据 source 决定标注格式"""
+    """发送本地图片。API 来源的只发图, 本地图带【画师】角色 · 表情 标注"""
     full_path = BQ_ROOT / pic["file"]
     if not full_path.exists():
         await bot.send(f"图片文件不存在：{pic['file']}")
         return
 
+    if pic.get("source") == "api" or pic.get("_artist", "") == "API":
+        await bot.send(MessageSegment.image(full_path))
+        return
+
     artist = pic.get("_artist", "")
     char = pic.get("_char", "未知角色")
     emotion = pic.get("emotion", "")
-
-    if pic.get("source") == "api" or artist == "API":
-        label = f"【API】{char}"
-    else:
-        label = f"【{artist}】{char} · {emotion}"
-
-    await bot.send([MessageSegment.text(label), MessageSegment.image(full_path)])
+    await bot.send(
+        [MessageSegment.text(f"【{artist}】{char} · {emotion}"), MessageSegment.image(full_path)]
+    )
 
 
 async def _try_api(role: str = "") -> ApiPic | None:
@@ -71,20 +71,18 @@ async def _try_api(role: str = "") -> ApiPic | None:
 
 
 async def _send_from_api(bot: Bot, data: ApiPic) -> None:
-    """发送一张 API 来源的图。优先用落盘缓存；没存下来就现下载到 cache 再发"""
-    label = f"【API】{data['role']}"
-
+    """发送一张 API 来源的图。只发图不带文案，优先用落盘缓存；没存下来就现下载到 cache 再发"""
     saved_path = data.get("saved_path", "")
     if saved_path and Path(saved_path).exists():
-        await bot.send([MessageSegment.text(label), MessageSegment.image(Path(saved_path))])
+        await bot.send(MessageSegment.image(Path(saved_path)))
         return
 
     temp_path = new_cache_path("api", data["suffix"])
     if await download_to_url(data["url"], temp_path):
-        await bot.send([MessageSegment.text(label), MessageSegment.image(temp_path)])
+        await bot.send(MessageSegment.image(temp_path))
         return
 
-    await bot.send(label + "\n（图片下载失败）")
+    await bot.send("图片下载失败")
 
 
 def _load_ww_alias() -> dict[str, str]:
