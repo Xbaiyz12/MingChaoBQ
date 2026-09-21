@@ -1,4 +1,3 @@
-from pathlib import Path
 from gsuid_core.data_store import get_res_path
 
 # 插件数据根目录：gsuid_core/data/MingChaoBQ/

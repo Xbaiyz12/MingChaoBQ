@@ -1,55 +1,85 @@
 import json
 from pathlib import Path
+from collections.abc import Mapping
 
 import aiofiles
 from PIL import Image
+
 from gsuid_core.sv import get_plugin_available_prefix
-from gsuid_core.help.model import PluginHelp
 from gsuid_core.help.draw_new_plugin_help import get_new_help
 
 from ..version import MingChaoBQ_version
+from ..utils.help_types import HelpSV, HelpCategory
 from ..utils.help_assets import (
     PLUGIN_ICON,
     DATA_ICON_DIR,
-    ensure_icon_dir,
     load_bg,
-    load_icon_image,
-    compress_result,
     get_max_width,
+    compress_result,
+    ensure_icon_dir,
+    load_icon_image,
 )
 
-HELP_DATA = Path(__file__).parent / "help.json"
+HELP_DATA = Path(__file__).resolve().parent / "help.json"
 
 PREFIX = get_plugin_available_prefix("MingChaoBQ")
 
 
-async def get_help_data() -> dict:
+def _as_str(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _build_item(raw: Mapping[object, object]) -> HelpSV:
+    item = HelpSV(name=_as_str(raw.get("name")), eg=_as_str(raw.get("eg")))
+    icon = load_icon_image(_as_str(raw.get("icon")))
+    if icon is not None:
+        item["icon"] = icon
+    return item
+
+
+def _build_category(raw: Mapping[object, object]) -> HelpCategory:
+    raw_items = raw.get("data")
+    items: list[HelpSV] = []
+    if isinstance(raw_items, list):
+        items = [_build_item(sub) for sub in raw_items if isinstance(sub, dict)]
+
+    entry = HelpCategory(desc=_as_str(raw.get("desc")), data=items)
+
+    name = _as_str(raw.get("name"))
+    if name:
+        entry["name"] = name
+    help_text = _as_str(raw.get("help"))
+    if help_text:
+        entry["help"] = help_text
+    color = _as_str(raw.get("color"))
+    if color:
+        entry["color"] = color
+
+    pm = raw.get("pm")
+    if isinstance(pm, int):
+        entry["pm"] = pm
+
+    icon = load_icon_image(_as_str(raw.get("icon")))
+    if icon is not None:
+        entry["icon"] = icon
+    return entry
+
+
+async def get_help_data() -> dict[str, HelpCategory]:
     async with aiofiles.open(HELP_DATA, "rb") as file:
-        data = json.loads(await file.read())
+        raw: object = json.loads(await file.read())
 
-    # 把 icon 字符串替换成 Image 对象
-    for cat_name, cat_data in data.items():
-        if "icon" in cat_data:
-            img = load_icon_image(cat_data["icon"])
-            if img is not None:
-                cat_data["icon"] = img
-            else:
-                cat_data.pop("icon", None)
-
-        for item in cat_data.get("data", []):
-            if "icon" in item:
-                img = load_icon_image(item["icon"])
-                if img is not None:
-                    item["icon"] = img
-                else:
-                    item.pop("icon", None)
-
-    return data
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        name: _build_category(data) for name, data in raw.items() if isinstance(name, str) and isinstance(data, dict)
+    }
 
 
-async def get_help(user_pm: int):
+async def get_help(user_pm: int) -> Path:
     ensure_icon_dir()
 
+    # 框架声明的 PluginHelp 与 get_new_help 实际读取的字段不一致，这里给实际字段
     result = await get_new_help(
         plugin_name="MingChaoBQ",
         plugin_info={f"v{MingChaoBQ_version}": ""},

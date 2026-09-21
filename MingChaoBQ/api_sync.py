@@ -1,79 +1,87 @@
+"""API 结果的本地落盘：按角色分目录，按图片内容去重。"""
+
 import hashlib
 from pathlib import Path
 
+from gsuid_core.pool import to_thread
+
+from .api_client import DEFAULT_BASE, DEFAULT_RANDOM_PATH, DEFAULT_CHARACTER_PARAM, ApiPic, BqApiClient
 from .utils.paths import BQ_ROOT
-from .api_client import BqApiClient
-from .mingchao_config import get_config
+from .mingchao_config import get_str, get_bool
 
 API_DIR_NAME = "API"
 
 
-def _safe_name(name: str) -> str:
-    for ch in r'\/:*?"<>|':
-        name = name.replace(ch, "_")
-    return name.strip() or "未命名"
+def safe_name(name: str) -> str:
+    """把远端可控的字符串变成安全目录/文件名：去分隔符、去 . 与空白、限长。"""
+    cleaned = name
+    for ch in '\\/:*?"<>|':
+        cleaned = cleaned.replace(ch, "_")
+    cleaned = "".join(c for c in cleaned if c.isprintable()).strip().strip(".")
+    return cleaned[:64] or "未命名"
 
 
-def _get_client() -> BqApiClient:
-    base = (
-        get_config("mcbq_api_base")
-        or "https://emoji.wuwa.games/apis/api.random-emoji.wuwa.games"
-    ).strip()
-    token = (get_config("mcbq_api_token") or "").strip()
-    random_path = (get_config("mcbq_api_random_path") or "/v1alpha1/random").strip()
-    char_param = (get_config("mcbq_api_character_param") or "character").strip()
-    return BqApiClient(base, token, random_path, char_param)
+def get_client() -> BqApiClient:
+    return BqApiClient(
+        base_url=get_str("mcbq_api_base") or DEFAULT_BASE,
+        token=get_str("mcbq_api_token"),
+        random_path=get_str("mcbq_api_random_path") or DEFAULT_RANDOM_PATH,
+        character_param=get_str("mcbq_api_character_param") or DEFAULT_CHARACTER_PARAM,
+    )
 
 
 def _save_dir_for(role: str) -> Path:
-    return BQ_ROOT / API_DIR_NAME / _safe_name(role)
+    return BQ_ROOT / API_DIR_NAME / safe_name(role)
 
 
-def _url_to_filename(url: str, name: str, suffix: str = ".gif") -> str:
-    """用 URL 的 hash + 名字生成文件名，避免重名"""
-    h = hashlib.md5(url.encode("utf-8")).hexdigest()[:10]
-    safe = _safe_name(name)
-    return f"{safe}_{h}{suffix}"
+def _file_md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:10]
 
 
-async def save_api_pic_to_local(data: dict) -> Path | None:
+async def download_to_url(url: str, save_path: Path) -> bool:
+    """下载入口，调用方不用自己拼 client。"""
+    return await get_client().download(url, save_path)
+
+
+async def save_api_pic_to_local(data: ApiPic) -> Path | None:
     """
-    把 API 返回的一条数据下载并保存到本地。
-    返回本地路径或 None。
-    注意：由于 url 是临时 ticket，必须立刻下载，不能缓存 URL 复用。
+    下载一条 API 结果并保存到本地，返回本地路径或 None。
+    URL 是临时 ticket（同一张图每次都不一样），所以只能按图片内容去重，不能按 URL。
     """
-    if not get_config("mcbq_api_save_local"):
+    if not get_bool("mcbq_api_save_local"):
         return None
 
-    client = _get_client()
-    role = _safe_name(data.get("role", "未分类角色"))
-    name = data.get("name", "未命名")
-    suffix = data.get("suffix", ".gif")
-    url = data.get("url", "")
-    if not url:
+    save_dir = _save_dir_for(data["role"])
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    url = data["url"]
+    suffix = data["suffix"]
+    tmp_path = save_dir / f"tmp_{hashlib.md5(url.encode('utf-8')).hexdigest()[:10]}{suffix}"
+
+    if not await get_client().download(url, tmp_path):
+        tmp_path.unlink(missing_ok=True)
         return None
 
-    filename = _url_to_filename(url, name, suffix)
-    save_path = _save_dir_for(role) / filename
+    digest = await to_thread(_file_md5, tmp_path)
+    final_path = save_dir / f"{safe_name(data['name'])}_{digest}{suffix}"
+    if final_path.exists():
+        tmp_path.unlink(missing_ok=True)
+    else:
+        tmp_path.replace(final_path)
+    return final_path
 
-    if save_path.exists():
-        return save_path
 
-    ok = await client.download(url, save_path)
-    return save_path if ok else None
-
-
-async def fetch_and_save(role: str = "") -> dict | None:
-    """
-    从 API 获取一张，按配置保存到本地。
-    返回 {"url", "name", "role", "saved_path"} 或 None
-    """
-    client = _get_client()
-    data = await client.fetch_random_json(role=role)
+async def fetch_and_save(role: str = "") -> ApiPic | None:
+    """从 API 取一张，按配置保存到本地，返回带 saved_path 的记录。"""
+    data = await get_client().fetch_random_json(role=role)
     if not data:
         return None
 
     saved_path = await save_api_pic_to_local(data)
-    if saved_path:
+    if saved_path is not None:
         data["saved_path"] = str(saved_path)
     return data

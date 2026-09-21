@@ -1,36 +1,39 @@
-import time
+"""把长文本渲染成 PNG（搜索表情的结果列表用）。"""
+
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .paths import BQ_ROOT
+from gsuid_core.pool import to_thread
 
-# 缓存目录：data/MingChaoBQ/cache/
-CACHE_DIR = BQ_ROOT / "cache"
+from .cache import clean_cache, new_cache_path
+
+FontType = ImageFont.FreeTypeFont | ImageFont.ImageFont
+
+_FONT_CANDIDATES = (
+    Path("C:/Windows/Fonts/msyh.ttc"),  # 微软雅黑
+    Path("C:/Windows/Fonts/msyhbd.ttc"),
+    Path("C:/Windows/Fonts/simhei.ttf"),  # 黑体
+    Path("C:/Windows/Fonts/simsun.ttc"),  # 宋体
+    Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/System/Library/Fonts/PingFang.ttc"),
+)
 
 
-def _get_font(size: int) -> ImageFont.FreeTypeFont:
-    """按优先级查找可用的中文字体"""
-    candidates = [
-        Path("C:/Windows/Fonts/msyh.ttc"),      # 微软雅黑
-        Path("C:/Windows/Fonts/msyhbd.ttc"),
-        Path("C:/Windows/Fonts/simhei.ttf"),    # 黑体
-        Path("C:/Windows/Fonts/simsun.ttc"),    # 宋体
-        Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
-        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-        Path("/System/Library/Fonts/PingFang.ttc"),
-    ]
-    for p in candidates:
-        if p.exists():
-            return ImageFont.truetype(str(p), size)
+def _get_font(size: int) -> FontType:
+    """按优先级查找可用的中文字体，全都没有时退回 Pillow 内置位图字体。"""
+    for path in _FONT_CANDIDATES:
+        if path.exists():
+            return ImageFont.truetype(str(path), size)
     return ImageFont.load_default()
 
 
-def _wrap_line(line: str, font: ImageFont.FreeTypeFont, max_px: int) -> list:
+def _wrap_line(line: str, font: FontType, max_px: int) -> list[str]:
     """把一行超长文本按像素宽度折成多行"""
     if not line:
         return [""]
-    result = []
+    result: list[str] = []
     current = ""
     for ch in line:
         test = current + ch
@@ -44,19 +47,7 @@ def _wrap_line(line: str, font: ImageFont.FreeTypeFont, max_px: int) -> list:
     return result
 
 
-def _clean_cache():
-    """清理缓存目录中超过 1 小时的旧文件"""
-    try:
-        if not CACHE_DIR.exists():
-            return
-        now = time.time()
-        for f in CACHE_DIR.iterdir():
-            if f.is_file() and now - f.stat().st_mtime > 3600:
-                f.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
+@to_thread
 def render_text_to_image(
     text: str,
     title: str = "",
@@ -65,25 +56,21 @@ def render_text_to_image(
     title_size: int = 28,
     line_height: int = 36,
     padding: int = 30,
-    bg_color: tuple = (255, 255, 255),
-    text_color: tuple = (30, 30, 30),
-    title_color: tuple = (60, 110, 180),
+    bg_color: tuple[int, int, int] = (255, 255, 255),
+    text_color: tuple[int, int, int] = (30, 30, 30),
+    title_color: tuple[int, int, int] = (60, 110, 180),
 ) -> Path:
     """
-    把长文本渲染成 PNG 图片，保存到缓存目录，返回文件路径。
-    可直接传给 MessageSegment.image()。
+    把长文本渲染成 PNG 图片，保存到缓存目录并返回文件路径，可直接传给 MessageSegment.image()。
     """
     font = _get_font(font_size)
     title_font = _get_font(title_size)
-
     max_text_width = width - 2 * padding
 
-    # 折行处理
-    wrapped_lines = []
+    wrapped_lines: list[str] = []
     for line in text.split("\n"):
         wrapped_lines.extend(_wrap_line(line, font, max_text_width))
 
-    # 计算图片高度
     height = padding
     if title:
         height += title_size + 20
@@ -101,9 +88,7 @@ def render_text_to_image(
         draw.text((padding, y), line, font=font, fill=text_color)
         y += line_height
 
-    # 保存到缓存
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    _clean_cache()
-    filepath = CACHE_DIR / f"text_{int(time.time() * 1000)}.png"
+    clean_cache()
+    filepath = new_cache_path("text")
     img.save(filepath, format="PNG")
     return filepath

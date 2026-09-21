@@ -1,9 +1,10 @@
 from typing import Dict
+
 from gsuid_core.utils.plugins_config.models import (
     GSC,
+    GsStrConfig,
     GsBoolConfig,
     GsListStrConfig,
-    GsStrConfig,
 )
 
 CONFIG_DEFAULT: Dict[str, GSC] = {
@@ -23,7 +24,7 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="允许使用本插件的群号，一行一个",
         data=[],
     ),
-        "mcbq_blacklist": GsListStrConfig(
+    "mcbq_blacklist": GsListStrConfig(
         title="群黑名单",
         desc="禁止使用本插件的群号，一行一个。优先级高于白名单",
         data=[],

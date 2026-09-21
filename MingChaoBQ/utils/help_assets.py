@@ -1,14 +1,18 @@
-import time
+"""帮助图 / 一览图的素材查找与结果压缩。"""
+
 from io import BytesIO
 from pathlib import Path
 
 from PIL import Image
 
+from gsuid_core.logger import logger
+
+from .cache import clean_cache, new_cache_path
 from .paths import BQ_ROOT
-from ..mingchao_config import get_config
+from ..mingchao_config import StrKey, get_int, get_str
 
 # 插件根目录：plugins/MingChaoBQ/
-PLUGIN_ROOT = Path(__file__).parent.parent.parent
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # 插件自带的默认图标目录（随 GitHub 仓库走）
 PLUGIN_ICON_DIR = PLUGIN_ROOT / "MingChaoBQ" / "icons"
@@ -19,109 +23,94 @@ DATA_ICON_DIR = BQ_ROOT / "icons"
 # 插件主图标（帮助图顶部那个）
 PLUGIN_ICON = PLUGIN_ROOT / "ICON.png"
 
+# 框架 get_new_help 未标注返回类型，实际是 bytes（见 convert_img_sync）
+HelpResult = BytesIO | Path | bytes | bytearray | Image.Image
 
-def ensure_icon_dir():
+
+def ensure_icon_dir() -> None:
     """确保 data/MingChaoBQ/icons/ 存在，方便用户往里面放自定义图标"""
     DATA_ICON_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def find_icon_path(name: str):
-    """
-    查找图标文件，按 data → 插件目录 顺序。
-    返回 Path 或 None。
-    """
+def find_icon_path(name: str) -> Path | None:
+    """查找图标文件，按 data → 插件目录 顺序；都找不到时退回通用图标。"""
     if not name:
         return None
 
-    # 绝对路径直接用
-    p = Path(name)
-    if p.is_absolute() and p.exists():
-        return p
+    direct = Path(name)
+    if direct.is_absolute() and direct.exists():
+        return direct
 
-    # data 目录优先
-    data_path = DATA_ICON_DIR / name
-    if data_path.exists():
-        return data_path
+    for base in (DATA_ICON_DIR, PLUGIN_ICON_DIR):
+        path = base / name
+        if path.exists():
+            return path
 
-    # 插件目录
-    plugin_path = PLUGIN_ICON_DIR / name
-    if plugin_path.exists():
-        return plugin_path
-
-    # 兜底通用图标
     if name != "通用.png":
-        for cand in (DATA_ICON_DIR / "通用.png", PLUGIN_ICON_DIR / "通用.png"):
-            if cand.exists():
-                return cand
+        for base in (DATA_ICON_DIR, PLUGIN_ICON_DIR):
+            fallback = base / "通用.png"
+            if fallback.exists():
+                return fallback
 
     return None
 
 
-def load_icon_image(name: str):
+def load_icon_image(name: str) -> Image.Image | None:
     """查找并加载图标，返回 PIL.Image 或 None"""
     path = find_icon_path(name)
     if path is None:
         return None
     try:
         return Image.open(path).convert("RGBA")
-    except Exception:
+    except OSError as e:
+        logger.warning(f"[MingChaoBQ·图标] 无法加载 {path.name}: {e}")
         return None
 
 
-def load_bg(config_key: str):
-    """从配置读取背景图，返回 PIL Image 或 None。背景图仍从 data 目录读。"""
-    filename = (get_config(config_key) or "").strip()
+def load_bg(config_key: StrKey) -> Image.Image | None:
+    """从配置读取背景图文件名，返回 PIL Image 或 None。背景图始终从 data 目录读。"""
+    filename = get_str(config_key).strip()
     if not filename:
         return None
     path = BQ_ROOT / filename
     if not path.exists():
+        logger.warning(f"[MingChaoBQ·背景] 找不到 {filename}，使用默认背景")
         return None
     try:
         return Image.open(path).convert("RGBA")
-    except Exception:
+    except OSError as e:
+        logger.warning(f"[MingChaoBQ·背景] 无法加载 {filename}: {e}")
         return None
 
 
-def compress_result(result, max_width: int = 1200) -> Path:
-    """压缩帮助图结果，保存到缓存文件，返回 Path。"""
+def _to_image(result: HelpResult) -> Image.Image:
+    if isinstance(result, (bytes, bytearray)):
+        return Image.open(BytesIO(result))
     if isinstance(result, BytesIO):
         result.seek(0)
-        img = Image.open(result)
-    elif isinstance(result, Path):
-        img = Image.open(result)
-    elif isinstance(result, (bytes, bytearray)):
-        img = Image.open(BytesIO(result))
-    elif isinstance(result, Image.Image):
-        img = result
-    else:
-        return result
+        return Image.open(result)
+    if isinstance(result, Path):
+        return Image.open(result)
+    return result
+
+
+def compress_result(result: HelpResult, max_width: int = 1200) -> Path:
+    """压缩帮助图结果并落缓存目录，返回 Path。"""
+    img = _to_image(result)
 
     if img.width > max_width:
         ratio = max_width / img.width
-        new_size = (max_width, int(img.height * ratio))
-        img = img.resize(new_size, Image.LANCZOS)
+        img = img.resize((max_width, int(img.height * ratio)), Image.LANCZOS)
 
-    cache_dir = BQ_ROOT / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        now = time.time()
-        for f in cache_dir.iterdir():
-            if f.is_file() and now - f.stat().st_mtime > 3600:
-                f.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-    filepath = cache_dir / f"overview_{int(time.time() * 1000)}.png"
+    clean_cache()
     if img.mode in ("RGBA", "P", "LA"):
+        filepath = new_cache_path("help", ".png")
         img.save(filepath, format="PNG", optimize=True, compress_level=9)
     else:
+        filepath = new_cache_path("help", ".jpg")
         img.convert("RGB").save(filepath, format="JPEG", quality=80, optimize=True)
     return filepath
 
 
 def get_max_width() -> int:
-    try:
-        return int((get_config("mcbq_image_max_width") or "1200").strip() or 1200)
-    except Exception:
-        return 1200
+    return get_int("mcbq_image_max_width", 1200)
