@@ -58,9 +58,7 @@ async def _send_pic(bot: Bot, pic: PicEntry) -> None:
     artist = pic.get("_artist", "")
     char = pic.get("_char", "未知角色")
     emotion = pic.get("emotion", "")
-    await bot.send(
-        [MessageSegment.text(f"【{artist}】{char} · {emotion}"), MessageSegment.image(full_path)]
-    )
+    await bot.send([MessageSegment.text(f"【{artist}】{char} · {emotion}"), MessageSegment.image(full_path)])
 
 
 async def _try_api(role: str = "") -> ApiPic | None:
