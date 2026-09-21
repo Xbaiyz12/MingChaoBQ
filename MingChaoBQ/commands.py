@@ -145,6 +145,15 @@ def _match_chars(index: Index, keyword: str) -> list[str]:
     return [real_name] if real_name in _all_char_names(index) else []
 
 
+def _match_chars_fuzzy(index: Index, keyword: str) -> list[str]:
+    """角色名按包含关系兜底("汐" → "今汐")"""
+    real_name = _resolve_char_name(keyword)
+    names = _all_char_names(index)
+    if real_name in names:
+        return [real_name]
+    return sorted(name for name in names if keyword in name or name in keyword)
+
+
 def _match_emotions(index: Index, keyword: str, fuzzy: bool = False) -> list[PicEntry]:
     results: list[PicEntry] = []
     for a_name, chars in index.items():
@@ -155,6 +164,45 @@ def _match_emotions(index: Index, keyword: str, fuzzy: bool = False) -> list[Pic
                     if emo == keyword or (fuzzy and keyword in emo):
                         results.append(_with_meta(pic, a_name, c_name, sub_name))
     return results
+
+
+def _search_pics(index: Index, keyword: str) -> tuple[list[PicEntry], str]:
+    """
+    搜索关键字, 返回 (结果, 列表图上标注的来源)。
+    顺序: 表情精确 → 角色(含别名) → 画师 → 表情模糊 → 角色模糊 → 画师模糊。
+    表情名取自文件名尾部, 角色名不一定出现在表情名里(「今汐」317 张图里没有一条表情名
+    含今汐), 所以必须能按角色/画师兜底; 而精确的角色/画师名要排在"包含关系"的模糊表情名
+    之前——否则画师「捏捏」(2263 张)会被 4 个带"捏捏"的表情名截胡。
+    """
+    exact = _match_emotions(index, keyword, fuzzy=False)
+    if exact:
+        return exact, ""
+
+    chars = _match_chars(index, keyword)
+    char_pics = [pic for name in chars for pic in _collect_all_pics(index, char=name)]
+    if char_pics:
+        return char_pics, f"角色「{'/'.join(chars[:3])}」"
+
+    if keyword in index and keyword != "API":
+        artist_pics = _collect_all_pics(index, artist=keyword)
+        if artist_pics:
+            return artist_pics, f"画师「{keyword}」"
+
+    fuzzy = _match_emotions(index, keyword, fuzzy=True)
+    if fuzzy:
+        return fuzzy, "模糊匹配"
+
+    fuzzy_chars = _match_chars_fuzzy(index, keyword)
+    fuzzy_char_pics = [pic for name in fuzzy_chars for pic in _collect_all_pics(index, char=name)]
+    if fuzzy_char_pics:
+        return fuzzy_char_pics, f"角色「{'/'.join(fuzzy_chars[:3])}」"
+
+    artists = _match_artists(index, keyword)
+    artist_pics = [pic for name in artists for pic in _collect_all_pics(index, artist=name)]
+    if artist_pics:
+        return artist_pics, f"画师「{'/'.join(artists[:3])}」"
+
+    return [], ""
 
 
 def _collect_all_pics(index: Index, artist: str | None = None, char: str | None = None) -> list[PicEntry]:
@@ -358,16 +406,12 @@ async def cmd_search(bot: Bot, ev: Event) -> None:
 
     index = await load_index()
 
-    matched = _match_emotions(index, keyword, fuzzy=False)
-    fuzzy = False
+    matched, note = _search_pics(index, keyword)
     if not matched:
-        matched = _match_emotions(index, keyword, fuzzy=True)
-        fuzzy = True
-    if not matched:
-        await bot.send(f"没有找到表情「{keyword}」。换一个词试试吧。")
+        await bot.send(f"没有找到与「{keyword}」相关的表情、角色或画师。")
         return
 
-    img_path = await render_emotion_list(matched, keyword, fuzzy)
+    img_path = await render_emotion_list(matched, keyword, note)
     await bot.send(MessageSegment.image(img_path))
 
 

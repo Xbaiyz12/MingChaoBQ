@@ -27,8 +27,8 @@ PADDING = 28
 HEADER_HEIGHT = 96
 ROW_HEIGHT = 46
 ROW_GAP = 10
-# 匹配可能上百条，超过这个数量只画前面这些，避免图过长
-MAX_ITEMS = 300
+# 匹配可能上百条(角色搜索动辄几百张), 超过这个数量只画前面这些, 避免图过长
+MAX_ITEMS = 120
 
 
 def _cover(img: Image.Image, width: int, height: int) -> Image.Image:
@@ -86,8 +86,11 @@ def _row_meta(pic: PicEntry) -> str:
 
 
 @to_thread
-def render_emotion_list(items: list[PicEntry], keyword: str, fuzzy: bool = False) -> Path:
-    """把搜索结果渲染成列表图并返回缓存路径，可直接传给 MessageSegment.image()。"""
+def render_emotion_list(items: list[PicEntry], keyword: str, note: str = "") -> Path:
+    """把搜索结果渲染成列表图并返回缓存路径，可直接传给 MessageSegment.image()。
+
+    note 显示在副标题上, 说明结果来源(模糊匹配 / 角色「今汐」 / 画师「捏捏」)。
+    """
     shown = items[:MAX_ITEMS]
     columns = 1 if len(shown) <= 12 else 2
     rows = max(1, -(-len(shown) // columns))
@@ -127,9 +130,12 @@ def render_emotion_list(items: list[PicEntry], keyword: str, fuzzy: bool = False
         TITLE_FILL,
     )
 
-    subtitle = f"共 {len(items)} 个" + ("（模糊匹配）" if fuzzy else "")
+    parts = [f"共 {len(items)} 个"]
+    if note:
+        parts.append(note)
     if len(items) > MAX_ITEMS:
-        subtitle += f" · 仅显示前 {MAX_ITEMS} 个"
+        parts.append(f"仅显示前 {MAX_ITEMS} 个")
+    subtitle = " · ".join(parts)
     _draw_text(draw, PADDING + 32, PADDING + 72, subtitle, sub_font, META_FILL)
 
     column_width = (width - PADDING * 2 - (columns - 1) * ROW_GAP) // columns
