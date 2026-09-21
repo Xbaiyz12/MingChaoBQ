@@ -34,6 +34,7 @@ def _save_dir_for(role: str) -> Path:
     return BQ_ROOT / API_DIR_NAME / safe_name(role)
 
 
+@to_thread
 def _file_md5(path: Path) -> str:
     digest = hashlib.md5()
     with open(path, "rb") as f:
@@ -66,7 +67,7 @@ async def save_api_pic_to_local(data: ApiPic) -> Path | None:
         tmp_path.unlink(missing_ok=True)
         return None
 
-    digest = await to_thread(_file_md5, tmp_path)
+    digest = await _file_md5(tmp_path)
     final_path = save_dir / f"{safe_name(data['name'])}_{digest}{suffix}"
     if final_path.exists():
         tmp_path.unlink(missing_ok=True)
