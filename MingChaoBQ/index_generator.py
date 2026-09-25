@@ -2,6 +2,7 @@
 
 import re
 import json
+import asyncio
 from pathlib import Path
 
 from gsuid_core.pool import to_thread
@@ -194,9 +195,12 @@ async def load_index() -> Index:
     if _cached_index is not None and mtime == _cached_mtime:
         return _cached_index
 
-    try:
+    def _read_index_file() -> object:
         with open(INDEX_PATH, "r", encoding="utf-8") as f:
-            raw: object = json.load(f)
+            return json.load(f)
+
+    try:
+        raw: object = await asyncio.to_thread(_read_index_file)
     except (OSError, ValueError):
         # 索引文件是外部可改的，损坏时重新生成而不是把异常抛进命令里
         logger.warning("[MingChaoBQ·索引] index.json 无法读取，重新生成")

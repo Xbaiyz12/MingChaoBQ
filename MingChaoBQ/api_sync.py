@@ -1,5 +1,6 @@
 """API 结果的本地落盘：按角色分目录，按图片内容去重。"""
 
+import shutil
 import hashlib
 from pathlib import Path
 
@@ -72,7 +73,7 @@ async def save_api_pic_to_local(data: ApiPic) -> Path | None:
     if final_path.exists():
         tmp_path.unlink(missing_ok=True)
     else:
-        tmp_path.replace(final_path)
+        shutil.move(tmp_path, final_path)
     return final_path
 
 

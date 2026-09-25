@@ -97,4 +97,15 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="0=主人 1=超级用户 2=群主 3=管理员 6=所有人，默认3",
         data="3",
     ),
+    # ===== 连发与管理 =====
+    "mcbq_burst_forward": GsBoolConfig(
+        title="连发表情合并转发",
+        desc="开启后，连发表情将合并为聊天记录发送，避免刷屏；失败自动降级单发",
+        data=True,
+    ),
+    "mcbq_upload_pm": GsStrConfig(
+        title="添加表情的最低权限",
+        desc="0=主人 1=超级用户 2=群主 3=管理员 6=所有人，默认0",
+        data="0",
+    ),
 }

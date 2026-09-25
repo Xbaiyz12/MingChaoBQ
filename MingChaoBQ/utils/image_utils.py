@@ -4,9 +4,12 @@ from pathlib import Path
 
 from PIL import ImageFont
 
+from gsuid_core.utils.fonts.fonts import FONT_ORIGIN_PATH
+
 FontType = ImageFont.FreeTypeFont | ImageFont.ImageFont
 
 _FONT_CANDIDATES = (
+    FONT_ORIGIN_PATH,  # 优先复用 GsCore 官方自带 MiSansVF
     Path("C:/Windows/Fonts/msyh.ttc"),  # 微软雅黑
     Path("C:/Windows/Fonts/msyhbd.ttc"),
     Path("C:/Windows/Fonts/simhei.ttf"),  # 黑体
@@ -21,7 +24,14 @@ def get_font(size: int) -> FontType:
     """按优先级查找可用的中文字体，全都没有时退回 Pillow 内置位图字体。"""
     for path in _FONT_CANDIDATES:
         if path.exists():
-            return ImageFont.truetype(str(path), size)
+            font = ImageFont.truetype(str(path), size)
+            set_axes = getattr(font, "set_variation_by_axes", None)
+            if callable(set_axes):
+                try:
+                    set_axes([630.0])
+                except (OSError, ValueError, TypeError):
+                    pass
+            return font
     return ImageFont.load_default()
 
 

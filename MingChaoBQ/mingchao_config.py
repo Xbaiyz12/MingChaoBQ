@@ -22,6 +22,7 @@ BoolKey = Literal[
     "mcbq_api_enable",
     "mcbq_api_save_local",
     "mcbq_poke_enable",
+    "mcbq_burst_forward",
 ]
 
 StrKey = Literal[
@@ -33,6 +34,7 @@ StrKey = Literal[
     "mcbq_api_random_path",
     "mcbq_api_character_param",
     "mcbq_poke_set_pm",
+    "mcbq_upload_pm",
 ]
 
 ListKey = Literal[

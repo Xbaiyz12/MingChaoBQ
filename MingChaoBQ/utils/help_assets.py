@@ -3,9 +3,11 @@
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from gsuid_core.logger import logger
+from gsuid_core.utils.fonts.fonts import core_font
+from gsuid_core.help.draw_new_plugin_help import TEXT_PATH
 
 from .cache import clean_cache, new_cache_path
 from .paths import BQ_ROOT
@@ -81,6 +83,48 @@ def load_bg(config_key: StrKey) -> Image.Image | None:
     except OSError as e:
         logger.warning(f"[MingChaoBQ·背景] 无法加载 {filename}: {e}")
         return None
+
+
+# 框架 footer 图(texture2d/footer_{mode}.png)的校准参数:
+# MiSans wght630 / size30, 正文灰 + 名字亮, 文字垂直居中于 80px 图
+FOOTER_FONT_SIZE = 30
+_RGBA = tuple[int, int, int, int]
+FOOTER_PALETTE: dict[str, tuple[_RGBA, _RGBA]] = {
+    "dark": ((188, 188, 188, 255), (255, 255, 255, 255)),
+    "light": ((67, 67, 67, 255), (0, 0, 0, 255)),
+}
+# 追加到框架署名行尾的内容, True 表示用强调色(与 GsCore / Wuyi无疑 同色)
+FOOTER_CREDIT: tuple[tuple[str, bool], ...] = (
+    (" & ", False),
+    ("MingChaoBQ", True),
+    (" by ", False),
+    ("Xbaiyz12", True),
+)
+
+
+def build_footer(help_mode: str = "dark") -> Image.Image:
+    """在框架默认 footer 行尾追加插件与作者署名, 字体与配色对齐框架原图。"""
+    base = Image.open(TEXT_PATH / f"footer_{help_mode}.png").convert("RGBA")
+    sub_color, main_color = FOOTER_PALETTE.get(help_mode, FOOTER_PALETTE["dark"])
+
+    content = base.getbbox()
+    if content is None:
+        return base
+
+    font = core_font(FOOTER_FONT_SIZE)
+    widths = [int(font.getlength(text)) for text, _ in FOOTER_CREDIT]
+
+    footer = Image.new("RGBA", (base.width + sum(widths), base.height), (0, 0, 0, 0))
+    footer.paste(base, (0, 0))
+
+    draw = ImageDraw.Draw(footer)
+    center_y = (content[1] + content[3]) // 2
+    x = content[2]
+    for (text, emphasis), width in zip(FOOTER_CREDIT, widths):
+        draw.text((x, center_y), text, font=font, fill=main_color if emphasis else sub_color, anchor="lm")
+        x += width
+
+    return footer
 
 
 def _to_image(result: HelpResult) -> Image.Image:

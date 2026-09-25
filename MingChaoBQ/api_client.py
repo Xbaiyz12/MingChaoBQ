@@ -24,9 +24,13 @@ _session: aiohttp.ClientSession | None = None
 
 
 def _session_instance() -> aiohttp.ClientSession:
-    """复用连接池，避免每次请求都新建 session。只在事件循环内被调用。"""
+    """复用连接池，避免每次请求都新建 session。绑定当前事件循环。"""
     global _session
-    if _session is None or _session.closed:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if _session is None or _session.closed or getattr(_session, "_loop", None) != loop:
         _session = aiohttp.ClientSession()
     return _session
 
@@ -163,8 +167,8 @@ class BqApiClient:
             logger.warning(f"[MingChaoBQ·下载] curl 失败 rc={proc.returncode} {stderr.decode(errors='ignore')[:200]}")
             return False
 
-        with open(save_path, "rb") as f:
-            head = f.read(32)
+        async with aiofiles.open(save_path, "rb") as f:
+            head = await f.read(32)
         if _looks_like_html(head):
             logger.warning("[MingChaoBQ·下载] curl 拿到 HTML 拦截页")
             save_path.unlink(missing_ok=True)
