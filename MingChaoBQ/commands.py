@@ -80,14 +80,15 @@ async def _try_api(role: str = "") -> ApiPic | None:
 
 async def _send_from_api(bot: Bot, data: ApiPic) -> None:
     """发送一张 API 来源的图。只发图不带文案，优先用落盘缓存；没存下来就现下载到 cache 再发"""
-    await record_emotion(data["name"])
     saved_path = data.get("saved_path", "")
     if saved_path and Path(saved_path).exists():
+        await record_emotion(data["name"])
         await bot.send(MessageSegment.image(Path(saved_path)))
         return
 
     temp_path = new_cache_path("api", data["suffix"])
     if await download_to_url(data["url"], temp_path):
+        await record_emotion(data["name"])
         await bot.send(MessageSegment.image(temp_path))
         return
 
