@@ -26,6 +26,7 @@ from .utils.cache import new_cache_path
 from .utils.paths import BQ_ROOT
 from .index_generator import load_index, rebuild_index
 from .mingchao_config import get_int, get_bool, set_config, get_str_list
+from .utils.user_names import resolve_profiles, fill_missing_profiles
 from .utils.index_types import Index, PicEntry
 from .utils.render_search import render_emotion_list
 from .utils.render_overview import render_char_list, render_one_artist, render_artist_overview
@@ -57,6 +58,24 @@ def _char_of(pic: PicEntry) -> str:
     """取统计用的角色名：画师目录下直接放的图没有角色目录，归为未分类。"""
     char = pic.get("_char", "")
     return "未分类" if char in ("", "_default") else char
+
+
+async def _poker_profile(ev: Event) -> tuple[str, str]:
+    """戳一戳的昵称与头像。meta 事件基本不带 sender 资料，缺什么就用用户库里的补。"""
+    name = ""
+    if "nickname" in ev.sender and isinstance(ev.sender["nickname"], str):
+        name = ev.sender["nickname"].strip()
+    avatar = ""
+    if "avatar" in ev.sender and isinstance(ev.sender["avatar"], str):
+        avatar = ev.sender["avatar"].strip()
+
+    if not name or not avatar:
+        profiles = await resolve_profiles([ev.user_id], ev.group_id)
+        profile = profiles[ev.user_id] if ev.user_id in profiles else None
+        if profile is not None:
+            name = name or profile["name"]
+            avatar = avatar or profile["icon"]
+    return name or ev.user_id, avatar
 
 
 async def _send_pic(bot: Bot, pic: PicEntry) -> None:
@@ -322,12 +341,7 @@ async def on_poke(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
 
-    sender_name = ev.user_id
-    if "nickname" in ev.sender and isinstance(ev.sender["nickname"], str):
-        sender_name = ev.sender["nickname"]
-    sender_avatar = ""
-    if "avatar" in ev.sender and isinstance(ev.sender["avatar"], str):
-        sender_avatar = ev.sender["avatar"]
+    sender_name, sender_avatar = await _poker_profile(ev)
     # 被戳次数与「是否自动回图」无关，关掉自动回图的群也要照常统计
     await record_poke(ev.user_id, sender_name, sender_avatar)
 
@@ -361,7 +375,9 @@ async def cmd_poke_statistics(bot: Bot, ev: Event) -> None:
     if not ev.group_id:
         await bot.send("该命令只能在群聊中使用。")
         return
-    await bot.send(MessageSegment.image(await render_poke_statistics(await get_statistics())))
+    data = await get_statistics()
+    await fill_missing_profiles(data)
+    await bot.send(MessageSegment.image(await render_poke_statistics(data)))
 
 
 @mcbq_sv.on_command(("表情统计", "表情发送统计"), to_ai="查看角色名发送统计图")

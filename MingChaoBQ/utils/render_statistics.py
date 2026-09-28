@@ -119,11 +119,18 @@ def _render(
 
 
 async def _load_avatars(users: dict[str, str]) -> dict[str, Image.Image]:
-    """有平台下发的头像 URL 就用它，否则按 QQ 号取 qlogo。"""
+    """优先用平台/库里的头像 URL，取不到再按 QQ 号拿 qlogo（URL 会过期）。"""
+
+    async def fetch(key: str, url: str) -> Image.Image | None:
+        if url:
+            image = await get_qq_avatar(None, url)
+            if image is not None:
+                return image
+        return await get_qq_avatar(key)
+
     if not users:
         return {}
-    tasks = [get_qq_avatar(None, url) if url else get_qq_avatar(key) for key, url in users.items()]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*(fetch(key, url) for key, url in users.items()))
     return {key: image for key, image in zip(users, results, strict=True) if image is not None}
 
 
