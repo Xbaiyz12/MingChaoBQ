@@ -21,7 +21,7 @@ from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 from .api_sync import safe_name, fetch_and_save, download_to_url
 from .whitelist import get_group_role, set_group_role, is_group_allowed
 from .api_client import ApiPic
-from .statistics import record_poke, get_statistics, record_emotion
+from .statistics import record_poke, record_role, get_statistics
 from .utils.cache import new_cache_path
 from .utils.paths import BQ_ROOT
 from .index_generator import load_index, rebuild_index
@@ -30,7 +30,7 @@ from .utils.index_types import Index, PicEntry
 from .utils.render_search import render_emotion_list
 from .utils.render_overview import render_char_list, render_one_artist, render_artist_overview
 from .mingchao_help.get_help import get_help
-from .utils.render_statistics import render_poke_statistics, render_emotion_statistics
+from .utils.render_statistics import render_poke_statistics, render_role_statistics
 
 mcbq_sv = SV("鸣潮表情包", area="ALL", pm=6)
 mcbq_admin_sv = SV("鸣潮表情包管理", area="ALL", pm=0)
@@ -53,6 +53,12 @@ def _with_meta(pic: PicEntry, artist: str, char: str, sub: str) -> PicEntry:
     return entry
 
 
+def _char_of(pic: PicEntry) -> str:
+    """取统计用的角色名：画师目录下直接放的图没有角色目录，归为未分类。"""
+    char = pic.get("_char", "")
+    return "未分类" if char in ("", "_default") else char
+
+
 async def _send_pic(bot: Bot, pic: PicEntry) -> None:
     """发送本地图片。API 来源的只发图, 本地图带【画师】角色 · 表情 标注"""
     full_path = BQ_ROOT / pic["file"]
@@ -62,14 +68,14 @@ async def _send_pic(bot: Bot, pic: PicEntry) -> None:
 
     if pic.get("source") == "api" or pic.get("_artist", "") == "API":
         await bot.send(MessageSegment.image(full_path))
-        await record_emotion(pic["emotion"])
+        await record_role(_char_of(pic))
         return
 
     artist = pic.get("_artist", "")
     char = pic.get("_char", "未知角色")
     emotion = pic.get("emotion", "")
     await bot.send([MessageSegment.text(f"【{artist}】{char} · {emotion}"), MessageSegment.image(full_path)])
-    await record_emotion(pic["emotion"])
+    await record_role(_char_of(pic))
 
 
 async def _try_api(role: str = "") -> ApiPic | None:
@@ -83,14 +89,14 @@ async def _send_from_api(bot: Bot, data: ApiPic) -> None:
     """发送一张 API 来源的图。只发图不带文案，优先用落盘缓存；没存下来就现下载到 cache 再发"""
     saved_path = data.get("saved_path", "")
     if saved_path and Path(saved_path).exists():
-        await record_emotion(data["name"])
         await bot.send(MessageSegment.image(Path(saved_path)))
+        await record_role(data["role"])
         return
 
     temp_path = new_cache_path("api", data["suffix"])
     if await download_to_url(data["url"], temp_path):
-        await record_emotion(data["name"])
         await bot.send(MessageSegment.image(temp_path))
+        await record_role(data["role"])
         return
 
     await bot.send("图片下载失败")
@@ -316,10 +322,18 @@ async def on_poke(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
 
+    sender_name = ev.user_id
+    if "nickname" in ev.sender and isinstance(ev.sender["nickname"], str):
+        sender_name = ev.sender["nickname"]
+    sender_avatar = ""
+    if "avatar" in ev.sender and isinstance(ev.sender["avatar"], str):
+        sender_avatar = ev.sender["avatar"]
+    # 被戳次数与「是否自动回图」无关，关掉自动回图的群也要照常统计
+    await record_poke(ev.user_id, sender_name, sender_avatar)
+
     if not get_bool("mcbq_poke_enable"):
         return
 
-    await record_poke(ev.user_id)
     role = get_group_role(ev.group_id)
     data = await _try_api(role=role)
     if data is not None:
@@ -343,14 +357,18 @@ async def on_poke(bot: Bot, ev: Event) -> None:
 async def cmd_poke_statistics(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
+    # 榜上有成员 QQ 号，只允许在群里看，避免私聊把别的群成员晒出来
+    if not ev.group_id:
+        await bot.send("该命令只能在群聊中使用。")
+        return
     await bot.send(MessageSegment.image(await render_poke_statistics(await get_statistics())))
 
 
-@mcbq_sv.on_command(("表情统计", "表情发送统计"), to_ai="查看表情名发送统计图")
-async def cmd_emotion_statistics(bot: Bot, ev: Event) -> None:
+@mcbq_sv.on_command(("表情统计", "表情发送统计"), to_ai="查看角色名发送统计图")
+async def cmd_role_statistics(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
-    await bot.send(MessageSegment.image(await render_emotion_statistics(await get_statistics())))
+    await bot.send(MessageSegment.image(await render_role_statistics(await get_statistics())))
 
 
 @mcbq_sv.on_command(("帮助", "表情包帮助"), to_ai="查看鸣潮表情包插件的帮助图")
@@ -479,9 +497,9 @@ async def _send_burst_items(bot: Bot, items: list[PicEntry | ApiPic]) -> None:
     # 若有多张图且开启了合并转发配置，优先合成聊天记录转发节点
     if len(items) > 1 and get_bool("mcbq_burst_forward"):
         node_elements: list[Message] = []
+        node_roles: list[str] = []
         for item in items:
             if "file" in item:
-                await record_emotion(item["emotion"])
                 full_path = BQ_ROOT / item["file"]
                 if not full_path.exists():
                     continue
@@ -493,19 +511,23 @@ async def _send_burst_items(bot: Bot, items: list[PicEntry | ApiPic]) -> None:
                     emotion = item.get("emotion", "")
                     node_elements.append(MessageSegment.text(f"【{artist}】{char} · {emotion}"))
                     node_elements.append(MessageSegment.image(full_path))
+                node_roles.append(_char_of(item))
             else:
-                await record_emotion(item["name"])
                 saved_path = item.get("saved_path", "")
                 if saved_path and Path(saved_path).exists():
                     node_elements.append(MessageSegment.image(Path(saved_path)))
+                    node_roles.append(item["role"])
                 else:
                     temp_path = new_cache_path("api", item["suffix"])
                     if await download_to_url(item["url"], temp_path):
                         node_elements.append(MessageSegment.image(temp_path))
+                        node_roles.append(item["role"])
 
         if node_elements:
             try:
                 await bot.send(MessageSegment.node(node_elements))
+                for role in node_roles:
+                    await record_role(role)
                 return
             except Exception as e:
                 logger.warning(f"[MingChaoBQ·连发] 合并转发失败，降级为单发: {e}")
