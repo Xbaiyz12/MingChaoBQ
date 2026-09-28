@@ -21,6 +21,7 @@ from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 from .api_sync import safe_name, fetch_and_save, download_to_url
 from .whitelist import get_group_role, set_group_role, is_group_allowed
 from .api_client import ApiPic
+from .statistics import record_poke, get_statistics, record_emotion
 from .utils.cache import new_cache_path
 from .utils.paths import BQ_ROOT
 from .index_generator import load_index, rebuild_index
@@ -29,6 +30,7 @@ from .utils.index_types import Index, PicEntry
 from .utils.render_search import render_emotion_list
 from .utils.render_overview import render_char_list, render_one_artist, render_artist_overview
 from .mingchao_help.get_help import get_help
+from .utils.render_statistics import render_poke_statistics, render_emotion_statistics
 
 mcbq_sv = SV("鸣潮表情包", area="ALL", pm=6)
 mcbq_admin_sv = SV("鸣潮表情包管理", area="ALL", pm=0)
@@ -58,6 +60,7 @@ async def _send_pic(bot: Bot, pic: PicEntry) -> None:
         await bot.send(f"图片文件不存在：{pic['file']}")
         return
 
+    await record_emotion(pic["emotion"])
     if pic.get("source") == "api" or pic.get("_artist", "") == "API":
         await bot.send(MessageSegment.image(full_path))
         return
@@ -77,6 +80,7 @@ async def _try_api(role: str = "") -> ApiPic | None:
 
 async def _send_from_api(bot: Bot, data: ApiPic) -> None:
     """发送一张 API 来源的图。只发图不带文案，优先用落盘缓存；没存下来就现下载到 cache 再发"""
+    await record_emotion(data["name"])
     saved_path = data.get("saved_path", "")
     if saved_path and Path(saved_path).exists():
         await bot.send(MessageSegment.image(Path(saved_path)))
@@ -313,6 +317,7 @@ async def on_poke(bot: Bot, ev: Event) -> None:
     if not get_bool("mcbq_poke_enable"):
         return
 
+    await record_poke(ev.user_id)
     role = get_group_role(ev.group_id)
     data = await _try_api(role=role)
     if data is not None:
@@ -330,6 +335,20 @@ async def on_poke(bot: Bot, ev: Event) -> None:
 
 
 # ==================== 用户命令 ====================
+
+
+@mcbq_sv.on_command("戳一戳统计", to_ai="查看戳一戳统计图")
+async def cmd_poke_statistics(bot: Bot, ev: Event) -> None:
+    if not is_group_allowed(ev.group_id):
+        return
+    await bot.send(MessageSegment.image(await render_poke_statistics(await get_statistics())))
+
+
+@mcbq_sv.on_command(("表情统计", "表情发送统计"), to_ai="查看表情名发送统计图")
+async def cmd_emotion_statistics(bot: Bot, ev: Event) -> None:
+    if not is_group_allowed(ev.group_id):
+        return
+    await bot.send(MessageSegment.image(await render_emotion_statistics(await get_statistics())))
 
 
 @mcbq_sv.on_command(("帮助", "表情包帮助"), to_ai="查看鸣潮表情包插件的帮助图")
@@ -460,6 +479,7 @@ async def _send_burst_items(bot: Bot, items: list[PicEntry | ApiPic]) -> None:
         node_elements: list[Message] = []
         for item in items:
             if "file" in item:
+                await record_emotion(item["emotion"])
                 full_path = BQ_ROOT / item["file"]
                 if not full_path.exists():
                     continue
@@ -472,6 +492,7 @@ async def _send_burst_items(bot: Bot, items: list[PicEntry | ApiPic]) -> None:
                     node_elements.append(MessageSegment.text(f"【{artist}】{char} · {emotion}"))
                     node_elements.append(MessageSegment.image(full_path))
             else:
+                await record_emotion(item["name"])
                 saved_path = item.get("saved_path", "")
                 if saved_path and Path(saved_path).exists():
                     node_elements.append(MessageSegment.image(Path(saved_path)))
