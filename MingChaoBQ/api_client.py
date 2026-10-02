@@ -21,23 +21,24 @@ _ALLOWED_SUFFIX = (".gif", ".png", ".jpg", ".jpeg", ".webp")
 _MAX_BYTES = 20 * 1024 * 1024
 
 _session: aiohttp.ClientSession | None = None
+_session_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _session_instance() -> aiohttp.ClientSession:
     """复用连接池，避免每次请求都新建 session。绑定当前事件循环。"""
-    global _session
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if _session is None or _session.closed or getattr(_session, "_loop", None) != loop:
-        _session = aiohttp.ClientSession()
+    global _session, _session_loop
+    loop = asyncio.get_running_loop()
+    if _session is None or _session.closed or _session_loop is not loop:
+        # trust_env：让 aiohttp 也认 HTTP(S)_PROXY，跟 curl 的行为对齐（云服务器常挂代理）
+        _session = aiohttp.ClientSession(trust_env=True)
+        _session_loop = loop
     return _session
 
 
 @on_core_shutdown
 async def close_api_session() -> None:
-    global _session
+    global _session, _session_loop
+    _session_loop = None
     if _session is not None and not _session.closed:
         await _session.close()
     _session = None

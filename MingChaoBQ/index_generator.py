@@ -47,7 +47,8 @@ def _extract_emotion_name(filename: str) -> str:
 
 
 def _make_pic(file_path: Path, is_api: bool = False) -> PicEntry:
-    pic = PicEntry(file=str(file_path.relative_to(BQ_ROOT)), emotion=_extract_emotion_name(file_path.name))
+    # 统一存正斜杠：Windows 反斜杠索引搬到 Linux 会变成一个找不到的文件名
+    pic = PicEntry(file=file_path.relative_to(BQ_ROOT).as_posix(), emotion=_extract_emotion_name(file_path.name))
     if is_api:
         pic["source"] = "api"
     return pic
@@ -117,7 +118,8 @@ def _parse_pic(value: object) -> PicEntry | None:
     emotion = value.get("emotion")
     if not isinstance(file, str) or not isinstance(emotion, str):
         return None
-    pic = PicEntry(file=file, emotion=emotion)
+    # 老索引（Windows 生成）里是反斜杠，归一成 / 后两端都能拼出正确路径
+    pic = PicEntry(file=file.replace("\\", "/"), emotion=emotion)
     source = value.get("source")
     if isinstance(source, str):
         pic["source"] = source

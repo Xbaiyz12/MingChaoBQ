@@ -25,6 +25,13 @@ git clone https://github.com/Xbaiyz12/MingChaoBQ.git
 
 装好后在网页控制台把插件和 `bq` 前缀打开，再发一次 `bq更新索引` 生成索引。
 
+## 🐧 Linux / Docker 部署说明
+
+- **下载器**：API 取图与保存本地优先调用系统 `curl`（绕开 Cloudflare 的 TLS 指纹拦截），没有 `curl` 时自动回退 `aiohttp`。官方 Docker 基础镜像已自带 `curl`；裸机若缺可用 `apt install -y curl`（Debian/Ubuntu）或 `apk add --no-cache curl`（Alpine）。
+- **代理**：`curl` 与 `aiohttp` 都会读取 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境变量，挂了代理池的服务器无需额外配置。
+- **中文字体**：渲染优先使用 GsCore 自带的 MiSansVF，不装系统字体也能正常出图；系统装了 Noto CJK / 文泉驿会自动作为回退（官方镜像已含 `fonts-noto-cjk`）。
+- **路径**：索引里的图片路径统一使用正斜杠，索引文件在 Windows 与 Linux 之间搬运后仍可直接使用。
+
 ## 🕹️ 指令
 
 | 指令 | 说明 |

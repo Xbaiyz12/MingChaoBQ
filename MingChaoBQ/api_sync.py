@@ -37,7 +37,7 @@ def _save_dir_for(role: str) -> Path:
 
 @to_thread
 def _file_md5(path: Path) -> str:
-    digest = hashlib.md5()
+    digest = hashlib.md5(usedforsecurity=False)
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 16), b""):
             digest.update(chunk)
@@ -62,7 +62,7 @@ async def save_api_pic_to_local(data: ApiPic) -> Path | None:
 
     url = data["url"]
     suffix = data["suffix"]
-    tmp_path = save_dir / f"tmp_{hashlib.md5(url.encode('utf-8')).hexdigest()[:10]}{suffix}"
+    tmp_path = save_dir / f"tmp_{hashlib.md5(url.encode('utf-8'), usedforsecurity=False).hexdigest()[:10]}{suffix}"
 
     if not await get_client().download(url, tmp_path):
         tmp_path.unlink(missing_ok=True)
