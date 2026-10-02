@@ -10,7 +10,7 @@ from gsuid_core.utils.image.image_tools import get_qq_avatar
 
 from .cache import clean_cache, new_cache_path
 from ..statistics import StatsData
-from .help_assets import load_bg
+from .help_assets import build_canvas
 from .image_utils import fit_text, get_font
 
 _WIDTH = 980
@@ -21,20 +21,6 @@ _AVATAR_SIZE = 52
 _ACCENT = (74, 144, 217)
 _TEXT = (38, 64, 92)
 _MUTED = (118, 148, 178)
-
-
-def _base(height: int) -> Image.Image:
-    bg = load_bg("mcbq_help_bg")
-    if bg is None:
-        return Image.new("RGB", (_WIDTH, height), (232, 243, 253))
-    image = bg.convert("RGB")
-    scale = max(_WIDTH / image.width, height / image.height)
-    image = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
-    left = (image.width - _WIDTH) // 2
-    top = (image.height - height) // 2
-    image = image.crop((left, top, left + _WIDTH, top + height))
-    veil = Image.new("RGBA", image.size, (244, 250, 255, 220))
-    return Image.alpha_composite(image.convert("RGBA"), veil).convert("RGB")
 
 
 def _sorted_rows(rows: list[tuple[str, int]]) -> list[tuple[str, int]]:
@@ -61,7 +47,7 @@ def _render(
 ) -> Path:
     shown = _sorted_rows(rows)[:_MAX_ROWS]
     height = _PADDING * 2 + 100 + len(shown) * _ROW_HEIGHT
-    image = _base(height)
+    image = build_canvas(_WIDTH, height)
     draw = ImageDraw.Draw(image)
     title_font = get_font(36)
     name_font = get_font(24)

@@ -85,6 +85,21 @@ def load_bg(config_key: StrKey) -> Image.Image | None:
         return None
 
 
+def build_canvas(width: int, height: int, config_key: StrKey = "mcbq_help_bg") -> Image.Image:
+    """统一画布：把配置的背景图铺满目标尺寸，再蒙一层浅色纱保证文字可读。"""
+    bg = load_bg(config_key)
+    if bg is None:
+        return Image.new("RGB", (width, height), (232, 243, 253))
+    image = bg.convert("RGB")
+    scale = max(width / image.width, height / image.height)
+    image = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
+    left = (image.width - width) // 2
+    top = (image.height - height) // 2
+    image = image.crop((left, top, left + width, top + height))
+    veil = Image.new("RGBA", image.size, (244, 250, 255, 220))
+    return Image.alpha_composite(image.convert("RGBA"), veil).convert("RGB")
+
+
 # 框架 footer 图(texture2d/footer_{mode}.png)的校准参数:
 # MiSans wght630 / size30, 正文灰 + 名字亮, 文字垂直居中于 80px 图
 FOOTER_FONT_SIZE = 30
