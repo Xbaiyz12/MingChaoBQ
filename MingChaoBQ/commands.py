@@ -18,7 +18,6 @@ from gsuid_core.data_store import get_res_path
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 
-from .dedupe import scan_duplicates, default_hamming_max
 from .api_sync import safe_name, fetch_and_save, download_to_url
 from .whitelist import get_group_role, set_group_role, is_group_allowed
 from .api_client import ApiPic
@@ -29,7 +28,6 @@ from .index_generator import count_pics, load_index, rebuild_index
 from .mingchao_config import get_int, get_bool, set_config, get_str_list
 from .utils.user_names import resolve_profiles, fill_missing_profiles
 from .utils.index_types import Index, PicEntry
-from .utils.render_dedupe import render_dedupe_report
 from .utils.render_search import render_emotion_list
 from .utils.render_overview import render_char_list, render_one_artist, render_artist_overview
 from .mingchao_help.get_help import get_help
@@ -37,9 +35,6 @@ from .utils.render_statistics import render_poke_statistics, render_role_statist
 
 mcbq_sv = SV("鸣潮表情包", area="ALL", pm=6)
 mcbq_admin_sv = SV("鸣潮表情包管理", area="ALL", pm=0)
-
-# 全库查重很重（要解码几千张图），同一时间只允许跑一轮
-_dedupe_lock = asyncio.Lock()
 
 _WW_ALIAS_FILE = get_res_path() / "XutheringWavesUID" / "alias" / "char_alias.json"
 
@@ -736,32 +731,6 @@ async def update_index(bot: Bot, ev: Event) -> None:
 
     total = count_pics(index)
     await bot.send(f"✅ 索引更新完成！共扫描到 {total} 张表情包。")
-
-
-def _dedupe_threshold(text: str) -> int:
-    """可选参数：汉明距离阈值（1-64），非法输入回默认值。"""
-    raw = text.strip()
-    if not raw.isdigit():
-        return default_hamming_max()
-    value = int(raw)
-    return value if 1 <= value <= 64 else default_hamming_max()
-
-
-@mcbq_admin_sv.on_command(("查重", "表情查重", "重复检查"), to_ai="检查本地表情包里重复的图片（仅主人可用）")
-async def cmd_dedupe(bot: Bot, ev: Event) -> None:
-    if _dedupe_lock.locked():
-        await bot.send("已经有一轮查重在跑了，等它出结果再试。")
-        return
-
-    threshold = _dedupe_threshold(ev.text)
-    await bot.send("开始检查重复表情，第一次要算全库指纹（半分钟左右），请稍候…")
-    async with _dedupe_lock:
-        report = await scan_duplicates(threshold)
-
-    if not report["groups"]:
-        await bot.send(f"✅ 检查了 {report['scanned']} 张表情，没有发现重复。")
-        return
-    await bot.send(MessageSegment.image(await render_dedupe_report(report)))
 
 
 @mcbq_admin_sv.on_command("开启戳一戳", to_ai="开启戳一戳触发随机表情功能")
