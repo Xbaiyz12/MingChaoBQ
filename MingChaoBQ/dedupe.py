@@ -31,15 +31,15 @@ _HAMMING_MAX = 16
 
 # 动图最多扫多少帧去找内容最丰富的那帧
 _MAX_SCAN_FRAMES = 24
-# 某帧非白像素占比达到这个值就够用了，不再往后扫
-_INK_ENOUGH = 0.25
-# 单帧非白像素少于此比例视为空白帧
-_INK_BLANK = 0.002
+# 某帧边缘能量达到这个值就算内容够丰富，不再往后扫
+_CONTENT_ENOUGH = 8.0
+# 边缘能量低于此值视为纯色/空白帧（全黑帧同样算空白）
+_CONTENT_BLANK = 0.5
 
 _HASH_BATCH = 200
 _CACHE_PATH = BQ_ROOT / "dedupe_hash.json"
 # 缓存格式版本：指纹算法改动时 +1，避免沿用旧值
-_CACHE_VERSION = 2
+_CACHE_VERSION = 3
 # 缓存 key 的分隔符：文件名里不可能出现这个控制字符，路径带 | 也不会切错
 _SEP = "\x1f"
 
@@ -63,7 +63,7 @@ class DupReport(TypedDict):
     groups: list[DupGroup]
     total_items: int
     waste_size: int
-    blank_first_frames: int
+    plain_skipped: int
 
 
 def default_hamming_max() -> int:
@@ -89,9 +89,16 @@ def _flatten(image: Image.Image) -> Image.Image:
     return image.convert("RGB")
 
 
-def _ink_ratio(image: Image.Image) -> float:
-    gray = np.asarray(image.convert("L"), dtype=np.int16)
-    return float((gray < 243).mean())
+def _content_score(image: Image.Image) -> float:
+    """帧的内容复杂度 = 相邻像素差分均值。纯色帧（含全黑帧）接近 0。
+
+    不能用「非白像素占比」：全黑帧的非白占比是 100%，会被误判成内容最丰富的帧，
+    实测正是它让一堆黑帧互相撞成「重复」（同一动作的 GIF 开头常是纯黑帧）。
+    """
+    gray = np.asarray(image.convert("L"), dtype=np.float32)
+    if gray.shape[0] < 2 or gray.shape[1] < 2:
+        return 0.0
+    return float(np.abs(np.diff(gray, axis=0)).mean() + np.abs(np.diff(gray, axis=1)).mean())
 
 
 def _crop_content(image: Image.Image) -> Image.Image:
@@ -103,30 +110,32 @@ def _crop_content(image: Image.Image) -> Image.Image:
     return image.crop(bbox)
 
 
-def read_content_frame(path: Path) -> tuple[Image.Image, bool] | None:
-    """读「内容最丰富的一帧」。返回 (图, 是否跳过了空白首帧)。查重与报告缩略图共用。"""
+def read_content_frame(path: Path) -> tuple[Image.Image, float] | None:
+    """读「内容最丰富的一帧」。返回 (图, 内容分数)。查重与报告缩略图共用。"""
     try:
         with Image.open(path) as image:
             frames = getattr(image, "n_frames", 1)
             if frames <= 1:
                 image.load()
-                return _flatten(image), False
+                flat = _flatten(image)
+                return flat, _content_score(flat)
 
             best: Image.Image | None = None
-            best_ink = -1.0
-            skipped = False
+            best_score = -1.0
             step = max(1, frames // _MAX_SCAN_FRAMES)
             for index in range(0, frames, step):
                 image.seek(index)
                 candidate = _flatten(image)
-                ink = _ink_ratio(candidate)
-                if index == 0 and ink < _INK_BLANK:
-                    skipped = True
-                if ink > best_ink:
-                    best, best_ink = candidate, ink
-                if best_ink >= _INK_ENOUGH:
+                score = _content_score(candidate)
+                if score > best_score:
+                    best, best_score = candidate, score
+                if best_score >= _CONTENT_ENOUGH:
                     break
-            return best, skipped
+            if best is None:
+                image.seek(0)
+                best = _flatten(image)
+                best_score = _content_score(best)
+            return best, best_score
     except (OSError, ValueError) as e:
         logger.debug(f"[MingChaoBQ·查重] 无法读取 {path.name}: {e}")
         return None
@@ -190,12 +199,16 @@ def _write_cache(hashes: dict[str, int]) -> None:
 
 @to_thread
 def _hash_one(item: DupItem) -> tuple[str, int, bool] | None:
-    """单张图的 dHash。解码（含挑帧）是唯一的重活，放线程池跑。"""
+    """单张图的 dHash。解码（含挑帧）是唯一的重活，放线程池跑。
+
+    整张图都几乎没有内容（纯色/全黑）时不返回指纹 —— 这类图互相之间天然"哈希相同"，
+    放进比对池只会制造误报。
+    """
     read = read_content_frame(BQ_ROOT / item["file"])
     if read is None:
         return None
-    image, skipped = read
-    return _cache_key(item), _dhash(image), skipped
+    image, score = read
+    return _cache_key(item), _dhash(image), score < _CONTENT_BLANK
 
 
 async def _hash_all(items: list[DupItem], cached: dict[str, int]) -> tuple[dict[str, int], int, int]:
@@ -210,17 +223,18 @@ async def _hash_all(items: list[DupItem], cached: dict[str, int]) -> tuple[dict[
             pending.append(item)
 
     computed = 0
-    blank_first = 0
+    plain = 0
     for start in range(0, len(pending), _HASH_BATCH):
         batch = await asyncio.gather(*(_hash_one(item) for item in pending[start : start + _HASH_BATCH]))
         for hit in batch:
             if hit is None:
                 continue
+            if hit[2]:
+                plain += 1
+                continue
             hashes[hit[0]] = hit[1]
             computed += 1
-            if hit[2]:
-                blank_first += 1
-    return hashes, computed, blank_first
+    return hashes, computed, plain
 
 
 @to_thread
@@ -298,11 +312,11 @@ async def scan_duplicates(threshold: int = _HAMMING_MAX) -> DupReport:
     index = await load_index()
     items_list = await _iter_local_pics(index)
     if not items_list:
-        return DupReport(scanned=0, groups=[], total_items=0, waste_size=0, blank_first_frames=0)
+        return DupReport(scanned=0, groups=[], total_items=0, waste_size=0, plain_skipped=0)
 
     items = {_cache_key(item): item for item in items_list}
     cached = await _read_cache()
-    hashes, computed, blank_first = await _hash_all(items_list, cached)
+    hashes, computed, plain = await _hash_all(items_list, cached)
     if computed:
         await _write_cache(hashes)
 
@@ -310,7 +324,7 @@ async def scan_duplicates(threshold: int = _HAMMING_MAX) -> DupReport:
     groups = await _build_groups(items, pairs)
 
     logger.info(
-        f"[MingChaoBQ·查重] 扫描 {len(items)} 张（新算 {computed}，命中 {len(pairs)} 对），"
+        f"[MingChaoBQ·查重] 扫描 {len(items)} 张（新算 {computed}，空白跳过 {plain}，候选 {len(pairs)} 对），"
         f"发现 {len(groups)} 组，耗时 {time.time() - started:.1f}s"
     )
     return DupReport(
@@ -318,5 +332,5 @@ async def scan_duplicates(threshold: int = _HAMMING_MAX) -> DupReport:
         groups=groups,
         total_items=sum(len(group["items"]) for group in groups),
         waste_size=sum(group["dup_size"] for group in groups),
-        blank_first_frames=blank_first,
+        plain_skipped=plain,
     )
