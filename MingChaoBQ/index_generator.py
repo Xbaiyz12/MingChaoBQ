@@ -111,6 +111,11 @@ def generate_index() -> Index:
     return index
 
 
+def count_pics(index: Index) -> int:
+    """索引里的图片总数，给「更新索引」的反馈与定时任务日志共用。"""
+    return sum(len(pics) for chars in index.values() for subcats in chars.values() for pics in subcats.values())
+
+
 def _parse_pic(value: object) -> PicEntry | None:
     if not isinstance(value, dict):
         return None

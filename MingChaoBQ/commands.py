@@ -24,7 +24,7 @@ from .api_client import ApiPic
 from .statistics import record_poke, record_role, get_statistics
 from .utils.cache import new_cache_path
 from .utils.paths import BQ_ROOT
-from .index_generator import load_index, rebuild_index
+from .index_generator import count_pics, load_index, rebuild_index
 from .mingchao_config import get_int, get_bool, set_config, get_str_list
 from .utils.user_names import resolve_profiles, fill_missing_profiles
 from .utils.index_types import Index, PicEntry
@@ -729,7 +729,7 @@ async def update_index(bot: Bot, ev: Event) -> None:
         await bot.send(f"❌ 索引生成失败：{e}")
         return
 
-    total = sum(len(pics) for chars in index.values() for subcats in chars.values() for pics in subcats.values())
+    total = count_pics(index)
     await bot.send(f"✅ 索引更新完成！共扫描到 {total} 张表情包。")
 
 

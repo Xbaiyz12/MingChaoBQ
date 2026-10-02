@@ -8,9 +8,10 @@ MingChaoBQ = Plugins(
     allow_empty_prefix=False,
 )
 
-# 以下导入只为触发 @sv.on_xxx 注册，顺序必须在 Plugins(...) 之后
+# 以下导入只为触发 @sv.on_xxx / @scheduler.scheduled_job 注册，顺序必须在 Plugins(...) 之后
 from . import (  # noqa: E402
     commands as commands,
+    scheduled as scheduled,
     whitelist as whitelist,
     mingchao_config as mingchao_config,
 )

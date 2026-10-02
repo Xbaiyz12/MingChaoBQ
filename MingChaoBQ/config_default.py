@@ -108,4 +108,20 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="0=主人 1=超级用户 2=群主 3=管理员 6=所有人，默认0",
         data="0",
     ),
+    # ===== 索引 =====
+    "mcbq_index_auto_update": GsBoolConfig(
+        title="每日自动更新索引",
+        desc="每天在设定时间重扫一次表情包目录；手动往目录加图、或 API 保存新图后靠它进索引",
+        data=True,
+    ),
+    "mcbq_index_update_hour": GsStrConfig(
+        title="自动更新索引·小时",
+        desc="0-23，默认 4（凌晨 4 点）",
+        data="4",
+    ),
+    "mcbq_index_update_minute": GsStrConfig(
+        title="自动更新索引·分钟",
+        desc="0-59，默认 0",
+        data="0",
+    ),
 }
