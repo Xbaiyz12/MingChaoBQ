@@ -1,4 +1,4 @@
-"""搜索表情结果列表图：淡蓝色卡片列表，背景沿用「bq帮助」的背景图。"""
+"""表情候选列表图：缩略图网格，让用户看清是哪个表情后按编号选。"""
 
 from pathlib import Path
 
@@ -7,8 +7,9 @@ from PIL import Image, ImageDraw
 from gsuid_core.pool import to_thread
 
 from .cache import clean_cache, new_cache_path
+from .paths import BQ_ROOT
 from .help_assets import load_bg, get_max_width
-from .image_utils import FontType, fit_text, get_font
+from .image_utils import FontType, fit_text, get_font, load_thumb_frame
 from .index_types import PicEntry
 
 # 淡蓝主基调
@@ -17,18 +18,20 @@ ACCENT_SOFT = (158, 200, 238)
 TITLE_FILL = (24, 68, 118)
 TEXT_FILL = (38, 64, 92)
 META_FILL = (118, 148, 178)
-CARD_FILL_A = (255, 255, 255, 178)
-CARD_FILL_B = (237, 246, 255, 178)
+CARD_FILL = (255, 255, 255, 198)
 # 淡蓝白纱：压住背景图，保证文字可读，同时整体偏淡蓝
 VEIL_FILL = (244, 250, 255, 216)
 
 CANVAS_WIDTH = 980
 PADDING = 28
 HEADER_HEIGHT = 96
-ROW_HEIGHT = 46
-ROW_GAP = 10
-# 匹配可能上百条(角色搜索动辄几百张), 超过这个数量只画前面这些, 避免图过长
-MAX_ITEMS = 120
+GRID_COLS = 5
+THUMB_BOX = 150
+# 缩略图 150 + 编号 + 表情名 + 画师·角色 三行文字的总高
+CARD_HEIGHT = 240
+CARD_GAP = 10
+# 每个候选都要解码缩略图，30 张已经够选；再多只提示收窄关键词
+MAX_LIST_ITEMS = 30
 
 
 def _cover(img: Image.Image, width: int, height: int) -> Image.Image:
@@ -68,13 +71,24 @@ def _draw_text(
     font: FontType,
     fill: tuple[int, int, int],
     right: int | None = None,
+    center: int | None = None,
 ) -> None:
-    """按视觉中线对齐绘制文字；给 right 时右对齐。不用 anchor，兼容位图兜底字体。"""
+    """按视觉中线对齐绘制文字；给 right 右对齐、给 center 居中。
+
+    不用 anchor，兼容位图兜底字体。
+    """
     bbox = font.getbbox(text)
     y = center_y - (bbox[1] + bbox[3]) // 2
-    if right is not None:
+    if center is not None:
+        x = center - round(font.getlength(text) / 2)
+    elif right is not None:
         x = right - round(font.getlength(text))
     draw.text((x, y), text, font=font, fill=fill)
+
+
+def _paste_thumb(canvas: Image.Image, thumb: Image.Image, x0: int, y0: int, card_width: int, box: int) -> None:
+    """把已等比缩放的缩略图居中贴到卡片上部。"""
+    canvas.paste(thumb, (x0 + (card_width - thumb.width) // 2, y0 + (box - thumb.height) // 2))
 
 
 def _row_meta(pic: PicEntry) -> str:
@@ -86,97 +100,115 @@ def _row_meta(pic: PicEntry) -> str:
 
 
 @to_thread
-def render_emotion_list(items: list[PicEntry], keyword: str, note: str = "") -> Path:
-    """把搜索结果渲染成列表图并返回缓存路径，可直接传给 MessageSegment.image()。
+def render_emotion_list(items: list[PicEntry], keyword: str, note: str = "", hint: str = "") -> Path:
+    """把表情候选渲染成缩略图网格，编号（表情1、表情2…）可直接被用户回复引用。
 
-    note 显示在副标题上, 说明结果来源(模糊匹配 / 角色「今汐」 / 画师「捏捏」)。
+    缩略图取「有内容的那一帧」：很多表情动图开头是空白帧，用第 0 帧会让
+    整屏缩略图都是白的，用户没法分辨。
     """
-    shown = items[:MAX_ITEMS]
-    columns = 1 if len(shown) <= 12 else 2
-    rows = max(1, -(-len(shown) // columns))
+    shown = items[:MAX_LIST_ITEMS]
+    rows = max(1, -(-len(shown) // GRID_COLS))
+    hidden = len(items) - len(shown)
 
     width = CANVAS_WIDTH
-    height = PADDING * 2 + HEADER_HEIGHT + 18 + rows * ROW_HEIGHT + (rows - 1) * ROW_GAP
+    height = PADDING * 2 + HEADER_HEIGHT + 18 + rows * CARD_HEIGHT + (rows - 1) * CARD_GAP
+    if hidden > 0:
+        height += 34
     canvas = _base_canvas(width, height)
 
-    # 半透明卡片/文字先画在透明层上再合成，避免直接落盘时 alpha 变成"镂空"
-    layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-
     title_font = get_font(36)
-    sub_font = get_font(20)
-    name_font = get_font(24)
-    meta_font = get_font(19)
-    index_font = get_font(17)
+    sub_font = get_font(19)
+    index_font = get_font(21)
+    name_font = get_font(19)
+    meta_font = get_font(16)
 
-    draw.rounded_rectangle(
+    header = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    head_draw = ImageDraw.Draw(header)
+    head_draw.rounded_rectangle(
         (PADDING, PADDING, width - PADDING, PADDING + HEADER_HEIGHT),
         radius=18,
-        fill=(255, 255, 255, 198),
+        fill=CARD_FILL,
         outline=(*ACCENT_SOFT, 255),
         width=2,
     )
-    draw.rounded_rectangle(
+    head_draw.rounded_rectangle(
         (PADDING, PADDING + 18, PADDING + 8, PADDING + HEADER_HEIGHT - 18),
         radius=4,
         fill=(*ACCENT, 255),
     )
     _draw_text(
-        draw,
+        head_draw,
         PADDING + 30,
-        PADDING + 40,
-        fit_text(f"搜索「{keyword}」", title_font, width - 2 * PADDING - 60),
+        PADDING + 38,
+        fit_text(f"表情「{keyword}」", title_font, width - 2 * PADDING - 60),
         title_font,
         TITLE_FILL,
     )
-
     parts = [f"共 {len(items)} 个"]
     if note:
         parts.append(note)
-    if len(items) > MAX_ITEMS:
-        parts.append(f"仅显示前 {MAX_ITEMS} 个")
-    subtitle = " · ".join(parts)
-    _draw_text(draw, PADDING + 32, PADDING + 72, subtitle, sub_font, META_FILL)
+    if hint:
+        parts.append(hint)
+    _draw_text(head_draw, PADDING + 32, PADDING + 72, " · ".join(parts), sub_font, META_FILL)
+    canvas = Image.alpha_composite(canvas, header)
 
-    column_width = (width - PADDING * 2 - (columns - 1) * ROW_GAP) // columns
-    # 左侧序号占 54px, 右侧内边距 14px; 表情名短、画师/角色名长, 按 35% : 65% 分
-    available = column_width - 54 - 14
-    name_width = round(available * 0.35)
-    meta_width = available - name_width - 16
+    body = ImageDraw.Draw(canvas)
+    card_width = (width - PADDING * 2 - (GRID_COLS - 1) * CARD_GAP) // GRID_COLS
     top = PADDING + HEADER_HEIGHT + 18
 
-    for index, pic in enumerate(shown):
-        column, row = divmod(index, rows)
-        x0 = PADDING + column * (column_width + ROW_GAP)
-        y0 = top + row * (ROW_HEIGHT + ROW_GAP)
-        draw.rounded_rectangle(
-            (x0, y0, x0 + column_width, y0 + ROW_HEIGHT),
+    for slot, pic in enumerate(shown):
+        row, column = divmod(slot, GRID_COLS)
+        x0 = PADDING + column * (card_width + CARD_GAP)
+        y0 = top + row * (CARD_HEIGHT + CARD_GAP)
+        body.rounded_rectangle(
+            (x0, y0, x0 + card_width, y0 + CARD_HEIGHT),
             radius=12,
-            fill=CARD_FILL_A if row % 2 == 0 else CARD_FILL_B,
-            outline=(*ACCENT_SOFT, 170),
-            width=1,
+            fill=(255, 255, 255),
+            outline=(*ACCENT_SOFT, 255),
+            width=2,
         )
-        center_y = y0 + ROW_HEIGHT // 2
-        _draw_text(draw, x0 + 16, center_y, str(index + 1), index_font, ACCENT)
+        thumb = load_thumb_frame(BQ_ROOT / pic["file"], THUMB_BOX)
+        if thumb is None:
+            body.rectangle((x0 + 8, y0 + 8, x0 + card_width - 8, y0 + 8 + THUMB_BOX), fill=(226, 236, 246))
+        else:
+            _paste_thumb(canvas, thumb, x0, y0, card_width, THUMB_BOX)
         _draw_text(
-            draw,
-            x0 + 54,
-            center_y,
-            fit_text(pic["emotion"], name_font, name_width),
+            body,
+            x0,
+            y0 + THUMB_BOX + 24,
+            f"表情{slot + 1}",
+            index_font,
+            ACCENT,
+            center=x0 + card_width // 2,
+        )
+        _draw_text(
+            body,
+            x0,
+            y0 + THUMB_BOX + 50,
+            fit_text(pic["emotion"], name_font, card_width - 15),
             name_font,
             TEXT_FILL,
+            center=x0 + card_width // 2,
         )
         _draw_text(
-            draw,
+            body,
             x0,
-            center_y,
-            fit_text(_row_meta(pic), meta_font, meta_width),
+            y0 + THUMB_BOX + 74,
+            fit_text(_row_meta(pic), meta_font, card_width - 15),
             meta_font,
             META_FILL,
-            right=x0 + column_width - 14,
+            center=x0 + card_width // 2,
         )
 
-    canvas = Image.alpha_composite(canvas, layer).convert("RGB")
+    if hidden > 0:
+        _draw_text(
+            body,
+            PADDING + 4,
+            top + rows * (CARD_HEIGHT + CARD_GAP) + 6,
+            f"另有 {hidden} 个未显示，请用更精确的关键词缩小范围",
+            sub_font,
+            META_FILL,
+        )
 
     max_width = get_max_width()
     if canvas.width > max_width:
@@ -184,7 +216,7 @@ def render_emotion_list(items: list[PicEntry], keyword: str, note: str = "") -> 
         canvas = canvas.resize((max_width, round(canvas.height * ratio)), Image.LANCZOS)
 
     clean_cache()
-    path = new_cache_path("search", ".jpg")
+    path = new_cache_path("emotion-list", ".jpg")
     # subsampling=0(4:4:4) 保住小字号文字边缘，质量 88 体积可控
-    canvas.save(path, format="JPEG", quality=88, subsampling=0, optimize=True)
+    canvas.convert("RGB").save(path, format="JPEG", quality=88, subsampling=0, optimize=True)
     return path
