@@ -763,6 +763,16 @@ def _detect_image_suffix(data: bytes) -> str:
     return ".png"
 
 
+def _unique_stem(directory: Path, stem: str, ext: str) -> str:
+    """同名文件已存在时补序号，避免自动生成的名字把上一张悄悄覆盖掉。"""
+    if not (directory / f"{stem}{ext}").exists():
+        return stem
+    seq = 2
+    while (directory / f"{stem}_{seq}{ext}").exists():
+        seq += 1
+    return f"{stem}_{seq}"
+
+
 async def _extract_image_bytes(bot: Bot, ev: Event) -> bytes | None:
     """从当前事件或交互等待中提取图片字节。"""
     imgs: list[bytes] = []
@@ -915,6 +925,13 @@ def _split_known_prefix(text: str, artists: list[str], chars: list[str]) -> tupl
     return None
 
 
+def _local_names(index: Index) -> tuple[list[str], list[str]]:
+    """本地已有的画师名与角色名（都不含 API 目录与 _default 占位）。"""
+    artists = sorted(name for name in index if name != "API")
+    chars = sorted(_all_char_names(index))
+    return artists, chars
+
+
 def _plan_add_pic(raw_text: str, index: Index) -> AddPicPlan:
     """把上传参数拆成画师 / 角色 / 表情名三层，缺哪层就留空（空层不建目录）。
 
@@ -924,8 +941,7 @@ def _plan_add_pic(raw_text: str, index: Index) -> AddPicPlan:
     - 纯参数自动分层兜底：识别不出的词一律当表情名，绝不乱建画师目录。
     画师优先落到本地已有目录（先精确，再忽略大小写/空格，最后模糊包含）。
     """
-    artists = sorted(name for name in index if name != "API")
-    chars = sorted(_all_char_names(index))
+    artists, chars = _local_names(index)
     tokens = raw_text.strip().split()
 
     def looks_artist(token: str) -> bool:
@@ -1008,8 +1024,8 @@ async def _confirm_local_name(bot: Bot, kind: str, raw: str, choices: list[str])
     if answer.isdigit():
         picked = int(answer)
         return shown[picked - 1] if 1 <= picked <= len(shown) else None
-    hit, _ = _lookup_local(answer, choices)
-    return hit or answer
+    # 回别的名字就按原文返回，由命令层拿完整本地名单再匹配一次
+    return answer
 
 
 @mcbq_admin_sv.on_command(
@@ -1034,21 +1050,25 @@ async def cmd_add_pic(bot: Bot, ev: Event) -> None:
 
     index = await load_index()
     plan = _plan_add_pic(ev.text, index)
+    artists, chars = _local_names(index)
 
     if plan["artist_choices"]:
         picked = await _confirm_local_name(bot, "画师", plan["artist"], plan["artist_choices"])
         if picked is None:
             await bot.send("已取消：没有选定画师。")
             return
-        plan["artist"] = picked
-        plan["artist_local"] = True
+        # 用户可能回的是本地另一个已有名字，按完整名单重新判定，别误报"新建/命中"
+        hit, _ = _lookup_local(picked, artists)
+        plan["artist"] = hit or picked
+        plan["artist_local"] = bool(hit)
     if plan["role_choices"]:
         picked = await _confirm_local_name(bot, "角色", plan["role"], plan["role_choices"])
         if picked is None:
             await bot.send("已取消：没有选定角色。")
             return
-        plan["role"] = picked
-        plan["role_local"] = True
+        hit, _ = _lookup_local(picked, chars)
+        plan["role"] = hit or picked
+        plan["role_local"] = bool(hit)
 
     artist_clean = safe_name(plan["artist"]) if plan["artist"] else ""
     role_clean = safe_name(plan["role"]) if plan["role"] else ""
@@ -1066,9 +1086,6 @@ async def cmd_add_pic(bot: Bot, ev: Event) -> None:
         await bot.send("未接收到有效的图片文件，添加取消。")
         return
 
-    if not emotion_clean:
-        emotion_clean = f"表情_{int(time.time()) % 10000}"
-
     # 给到哪层就存哪层：只给画师就放画师目录，只给角色时挂到「自定义」下
     if artist_clean and role_clean:
         save_dir = BQ_ROOT / artist_clean / role_clean
@@ -1083,7 +1100,11 @@ async def cmd_add_pic(bot: Bot, ev: Event) -> None:
     save_dir.mkdir(parents=True, exist_ok=True)
 
     ext = _detect_image_suffix(img_bytes)
+    if not emotion_clean:
+        emotion_clean = _unique_stem(save_dir, f"表情_{int(time.time()) % 10000}", ext)
     target_file = save_dir / f"{emotion_clean}{ext}"
+    overwrote = target_file.exists()
+
     async with aiofiles.open(target_file, "wb") as f:
         await f.write(img_bytes)
 
@@ -1110,8 +1131,10 @@ async def cmd_add_pic(bot: Bot, ev: Event) -> None:
     elif created_dir and artist_clean and role_clean:
         created.append(f"新建目录「{artist_show}/{role_show}」")
     tips = "；".join(matched + created)
+    if overwrote:
+        tips = f"{tips}；覆盖了同名文件" if tips else "覆盖了同名文件"
     await bot.send(
-        f"✅ 已添加：【{artist_show}】{role_show} · {emotion_clean}\n"
+        f"✅ 已添加：【{artist_show}】{role_show} · {target_file.stem}\n"
         f"位置：{target_file.relative_to(BQ_ROOT).as_posix()}" + (f"\n{tips}" if tips else "")
     )
 
