@@ -5,6 +5,7 @@ import json
 import time
 import random
 import asyncio
+from typing import TypedDict
 from pathlib import Path
 
 import aiofiles
@@ -35,6 +36,10 @@ from .utils.render_statistics import render_poke_statistics, render_role_statist
 
 mcbq_sv = SV("鸣潮表情包", area="ALL", pm=6)
 mcbq_admin_sv = SV("鸣潮表情包管理", area="ALL", pm=0)
+
+# 上传时缺层的兜底目录名
+_DEFAULT_ARTIST = "自定义"
+_DEFAULT_ROLE = "综合"
 
 _WW_ALIAS_FILE = get_res_path() / "XutheringWavesUID" / "alias" / "char_alias.json"
 
@@ -798,58 +803,227 @@ async def _extract_image_bytes(bot: Bot, ev: Event) -> bytes | None:
     return None
 
 
-def _resolve_add_pic_args(raw_text: str, index: Index) -> tuple[str, str, str]:
-    """智能解析上传表情的画师、角色与表情名，无画师时自动归入自定义。"""
+def _norm_name(name: str) -> str:
+    """压掉所有空白并统一大小写，用来跟本地已有目录名比对。"""
+    return re.sub(r"\s+", "", name).casefold()
+
+
+def _lookup_local(name: str, candidates: list[str]) -> tuple[str, list[str]]:
+    """在本地名字里找 name：先精确（忽略大小写与空格），再模糊包含。
+
+    返回 (唯一确定的本地名, 待用户选择的候选)；两者互斥，已确定时候选为空。
+    """
+    target = _norm_name(name)
+    if not target:
+        return "", []
+    exact = [item for item in candidates if _norm_name(item) == target]
+    if len(exact) == 1:
+        return exact[0], []
+    if len(exact) > 1:
+        return "", exact
+    fuzzy = [item for item in candidates if target in _norm_name(item) or _norm_name(item) in target]
+    if len(fuzzy) == 1:
+        return fuzzy[0], []
+    return "", fuzzy
+
+
+class AddPicPlan(TypedDict):
+    artist: str
+    role: str
+    emotion: str
+    artist_choices: list[str]
+    role_choices: list[str]
+    artist_local: bool
+    role_local: bool
+
+
+# 显式标注写法：画师:名字 / 角色:名字 / 表情:名字（中英文都认）
+_LABEL_ALIASES = {
+    "画师": "artist",
+    "作者": "artist",
+    "artist": "artist",
+    "角色": "role",
+    "char": "role",
+    "role": "role",
+    "表情": "emotion",
+    "表情名": "emotion",
+    "emotion": "emotion",
+}
+_LABEL_RE = re.compile(
+    r"(?:^|\s)(画师|作者|角色|char|role|表情名|表情|artist|emotion)[:：]\s*"
+    r"(.*?)(?=\s*(?:画师|作者|角色|char|role|表情名|表情|artist|emotion)[:：]|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _parse_labeled_tokens(raw_text: str) -> tuple[str, str, str] | None:
+    """解析「画师:X」这类显式标注；一个标注都没有时返回 None 走自动分层。
+
+    按整串扫而不是按空格切词：画师名本身可能带空格（如 MIX CRAFT）。
+    """
+    found: dict[str, list[str]] = {"artist": [], "role": [], "emotion": []}
+    matched = False
+    for match in _LABEL_RE.finditer(raw_text):
+        matched = True
+        value = match.group(2).strip()
+        if value:
+            found[_LABEL_ALIASES[match.group(1).lower()]].append(value)
+    if not matched:
+        return None
+    return " ".join(found["artist"]), " ".join(found["role"]), " ".join(found["emotion"])
+
+
+def _strip_prefix(text: str, name: str) -> str | None:
+    """text 是否以 name 开头（忽略空白与大小写差异）？是则返回剩余文本。"""
+    cursor = 0
+    for char in name:
+        if char.isspace():
+            continue
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor >= len(text) or text[cursor].casefold() != char.casefold():
+            return None
+        cursor += 1
+    return text[cursor:].strip()
+
+
+def _split_known_prefix(text: str, artists: list[str], chars: list[str]) -> tuple[str, str, str] | None:
+    """按本地已知名字切前缀。名字可能含空格（MIX CRAFT），所以长的先试。"""
+    for name in sorted(artists, key=len, reverse=True):
+        rest = _strip_prefix(text, name)
+        if rest is None:
+            continue
+        if not rest:
+            return name, "", ""
+        for char in sorted(chars, key=len, reverse=True):
+            rest2 = _strip_prefix(rest, char)
+            if rest2 is not None:
+                return name, char, rest2
+        return name, "", rest
+    for name in sorted(chars, key=len, reverse=True):
+        rest = _strip_prefix(text, name)
+        if rest is None:
+            continue
+        if not rest:
+            return "", name, ""
+        # 角色写在前面也要能归位：角色 + 画师 + 表情
+        for artist in sorted(artists, key=len, reverse=True):
+            rest2 = _strip_prefix(rest, artist)
+            if rest2 is not None:
+                return artist, name, rest2
+        return "", name, rest
+    return None
+
+
+def _plan_add_pic(raw_text: str, index: Index) -> AddPicPlan:
+    """把上传参数拆成画师 / 角色 / 表情名三层，缺哪层就留空（空层不建目录）。
+
+    三种写法，优先级从高到低：
+    - 显式标注 `画师:捏捏 角色:今汐 表情:比心`：想用本地还没有的画师名时用它，无歧义；
+    - 本地已知名字前缀匹配（名字可含空格）：`MIX CRAFT 比心` / `今汐 摸摸头`；
+    - 纯参数自动分层兜底：识别不出的词一律当表情名，绝不乱建画师目录。
+    画师优先落到本地已有目录（先精确，再忽略大小写/空格，最后模糊包含）。
+    """
+    artists = sorted(name for name in index if name != "API")
+    chars = sorted(_all_char_names(index))
     tokens = raw_text.strip().split()
-    known_artists = {a for a in index.keys() if a != "API"}
-    known_chars = _all_char_names(index)
+
+    def looks_artist(token: str) -> bool:
+        hit, choices = _lookup_local(token, artists)
+        return bool(hit or choices)
+
+    def looks_char(token: str) -> bool:
+        resolved = _resolve_char_name(token)
+        if resolved in chars or token.lower() in _CHAR_PINYIN_MAP:
+            return True
+        hit, choices = _lookup_local(resolved, chars)
+        return bool(hit or choices)
+
+    def build(artist: str, role: str, emotion: str) -> AddPicPlan:
+        resolved_role = _resolve_char_name(role) if role else ""
+        artist_hit, artist_choices = _lookup_local(artist, artists) if artist else ("", [])
+        role_hit, role_choices = _lookup_local(resolved_role, chars) if resolved_role else ("", [])
+        return AddPicPlan(
+            artist=artist_hit or artist,
+            role=role_hit or resolved_role,
+            emotion=emotion,
+            artist_choices=artist_choices,
+            role_choices=role_choices,
+            artist_local=bool(artist_hit),
+            role_local=bool(role_hit),
+        )
+
+    labeled = _parse_labeled_tokens(raw_text)
+    if labeled is not None:
+        return build(*labeled)
+
+    known = _split_known_prefix(raw_text.strip(), artists, chars)
+    if known is not None:
+        return build(*known)
 
     if len(tokens) >= 3:
-        t0, t1, t2 = tokens[0], tokens[1], " ".join(tokens[2:])
-        c0 = _resolve_char_name(t0)
-        # 颠倒输入容错：第一项为角色且第二项为已知画师
-        if (c0 in known_chars or t0.lower() in _CHAR_PINYIN_MAP) and t1 in known_artists:
-            return t1, c0, t2
-        return t0, _resolve_char_name(t1), t2
+        first, second, third = tokens[0], tokens[1], " ".join(tokens[2:])
+        # 颠倒容错：先角色后画师
+        if looks_char(first) and looks_artist(second):
+            return build(second, first, third)
+        return build(first, second, third)
 
     if len(tokens) == 2:
-        t0, t1 = tokens[0], tokens[1]
-        c0 = _resolve_char_name(t0)
-        c1 = _resolve_char_name(t1)
-        is_c0 = c0 in known_chars or t0.lower() in _CHAR_PINYIN_MAP
-        is_c1 = c1 in known_chars or t1.lower() in _CHAR_PINYIN_MAP
-        is_a0 = t0 in known_artists
-        is_a1 = t1 in known_artists
-
-        if is_c0 and not is_a1:
-            # 角色 + 表情名（无画师）
-            return "自定义", c0, t1
-        if is_a0 and not is_c1:
-            # 画师 + 表情名（无角色）
-            return t0, "综合", t1
-        if is_a0 and is_c1:
-            # 画师 + 角色（无表情名）
-            return t0, c1, f"{c1}_{int(time.time()) % 10000}"
-        if not is_a0 and is_c1:
-            # 表情名 + 角色
-            return "自定义", c1, t0
-        return "自定义", c0, t1
+        first, second = tokens[0], tokens[1]
+        if looks_char(first) and not looks_artist(second):
+            return build("", first, second)
+        if looks_artist(first) and not looks_char(second):
+            return build(first, "", second)
+        if looks_artist(first) and looks_char(second):
+            return build(first, second, "")
+        if not looks_artist(first) and looks_char(second):
+            return build("", second, first)
+        return build("", first, second)
 
     if len(tokens) == 1:
-        t0 = tokens[0]
-        c0 = _resolve_char_name(t0)
-        if c0 in known_chars or t0.lower() in _CHAR_PINYIN_MAP:
-            return "自定义", c0, f"{c0}_{int(time.time()) % 10000}"
-        if t0 in known_artists:
-            return t0, "综合", f"表情_{int(time.time()) % 10000}"
-        return "自定义", "综合", t0
+        token = tokens[0]
+        if looks_artist(token):
+            return build(token, "", "")
+        if looks_char(token):
+            return build("", token, "")
+        return build("", "", token)
 
-    ts = int(time.time()) % 10000
-    return "自定义", "综合", f"表情_{ts}"
+    return build("", "", "")
+
+
+async def _confirm_local_name(bot: Bot, kind: str, raw: str, choices: list[str]) -> str | None:
+    """模糊匹配到多个本地名字时列出来让用户选；回别的名字就按新名字创建。"""
+    shown = choices[:10]
+    listing = "\n".join(f"{index}. {name}" for index, name in enumerate(shown, 1))
+    more = f"\n（另有 {len(choices) - len(shown)} 个同名项未列出）" if len(choices) > len(shown) else ""
+    resp = await bot.receive_resp(
+        f"「{raw}」在本地匹配到多个{kind}：\n{listing}{more}\n回复序号选一个，或回复完整名称按新{kind}创建。",
+        timeout=30,
+    )
+    if resp is None:
+        return None
+    answer = resp.text.strip()
+    if not answer:
+        return None
+    if answer.isdigit():
+        picked = int(answer)
+        return shown[picked - 1] if 1 <= picked <= len(shown) else None
+    hit, _ = _lookup_local(answer, choices)
+    return hit or answer
 
 
 @mcbq_admin_sv.on_command(
-    ("添加表情", "导入表情", "bq添加表情", "bq导入表情", "鸣潮添加表情", "添加鸣潮表情"),
+    (
+        "添加表情",
+        "导入表情",
+        "上传表情",
+        "bq添加表情",
+        "bq导入表情",
+        "bq上传表情",
+        "鸣潮添加表情",
+        "添加鸣潮表情",
+        "上传鸣潮表情",
+    ),
     to_ai="添加表情包到本地表情库（需管理权限）",
 )
 async def cmd_add_pic(bot: Bot, ev: Event) -> None:
@@ -859,13 +1033,32 @@ async def cmd_add_pic(bot: Bot, ev: Event) -> None:
         return
 
     index = await load_index()
-    artist, role, emotion = _resolve_add_pic_args(ev.text, index)
+    plan = _plan_add_pic(ev.text, index)
 
-    artist_clean = safe_name(artist)
-    role_clean = safe_name(role)
-    emotion_clean = safe_name(emotion)
-    if not artist_clean or not role_clean or not emotion_clean:
-        await bot.send("画师、角色或表情名包含非法字符，请重新输入。")
+    if plan["artist_choices"]:
+        picked = await _confirm_local_name(bot, "画师", plan["artist"], plan["artist_choices"])
+        if picked is None:
+            await bot.send("已取消：没有选定画师。")
+            return
+        plan["artist"] = picked
+        plan["artist_local"] = True
+    if plan["role_choices"]:
+        picked = await _confirm_local_name(bot, "角色", plan["role"], plan["role_choices"])
+        if picked is None:
+            await bot.send("已取消：没有选定角色。")
+            return
+        plan["role"] = picked
+        plan["role_local"] = True
+
+    artist_clean = safe_name(plan["artist"]) if plan["artist"] else ""
+    role_clean = safe_name(plan["role"]) if plan["role"] else ""
+    emotion_clean = safe_name(plan["emotion"]) if plan["emotion"] else ""
+    for label, raw, cleaned in (("画师", plan["artist"], artist_clean), ("角色", plan["role"], role_clean)):
+        if raw and not cleaned:
+            await bot.send(f"{label}名包含非法字符，请重新输入。")
+            return
+    if plan["emotion"] and not emotion_clean:
+        await bot.send("表情名包含非法字符，请重新输入。")
         return
 
     img_bytes = await _extract_image_bytes(bot, ev)
@@ -873,11 +1066,24 @@ async def cmd_add_pic(bot: Bot, ev: Event) -> None:
         await bot.send("未接收到有效的图片文件，添加取消。")
         return
 
-    ext = _detect_image_suffix(img_bytes)
-    save_dir = BQ_ROOT / artist_clean / role_clean
-    save_dir.mkdir(parents=True, exist_ok=True)
-    target_file = save_dir / f"{emotion_clean}{ext}"
+    if not emotion_clean:
+        emotion_clean = f"表情_{int(time.time()) % 10000}"
 
+    # 给到哪层就存哪层：只给画师就放画师目录，只给角色时挂到「自定义」下
+    if artist_clean and role_clean:
+        save_dir = BQ_ROOT / artist_clean / role_clean
+    elif artist_clean:
+        save_dir = BQ_ROOT / artist_clean
+    elif role_clean:
+        save_dir = BQ_ROOT / _DEFAULT_ARTIST / role_clean
+    else:
+        save_dir = BQ_ROOT / _DEFAULT_ARTIST / _DEFAULT_ROLE
+
+    created_dir = not save_dir.exists()
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = _detect_image_suffix(img_bytes)
+    target_file = save_dir / f"{emotion_clean}{ext}"
     async with aiofiles.open(target_file, "wb") as f:
         await f.write(img_bytes)
 
@@ -886,7 +1092,28 @@ async def cmd_add_pic(bot: Bot, ev: Event) -> None:
     except OSError as e:
         logger.warning(f"[MingChaoBQ·导入] 重建索引异常: {e}")
 
-    await bot.send(f"✅ 成功添加表情包：【{artist_clean}】{role_clean} · {emotion_clean}")
+    artist_show = plan["artist"] or _DEFAULT_ARTIST
+    role_show = plan["role"] or _DEFAULT_ROLE
+    matched = [
+        f"{kind}「{name}」用了本地已有目录"
+        for kind, name, local in (
+            ("画师", plan["artist"], plan["artist_local"]),
+            ("角色", plan["role"], plan["role_local"]),
+        )
+        if name and local
+    ]
+    created = []
+    if created_dir and artist_clean and not role_clean:
+        created.append(f"新建画师目录「{artist_show}」")
+    elif created_dir and not artist_clean and role_clean:
+        created.append(f"在「{_DEFAULT_ARTIST}」下新建角色目录「{role_show}」")
+    elif created_dir and artist_clean and role_clean:
+        created.append(f"新建目录「{artist_show}/{role_show}」")
+    tips = "；".join(matched + created)
+    await bot.send(
+        f"✅ 已添加：【{artist_show}】{role_show} · {emotion_clean}\n"
+        f"位置：{target_file.relative_to(BQ_ROOT).as_posix()}" + (f"\n{tips}" if tips else "")
+    )
 
 
 # ==================== AI Core 意图路由工具 ====================
