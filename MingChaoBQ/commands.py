@@ -443,9 +443,10 @@ def _parse_emotion_choice(text: str, total: int) -> int | None:
     return value - 1 if 1 <= value <= total else None
 
 
-async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str, note: str = "") -> bool:
+async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str) -> bool:
     """命中多张时先出缩略图候选让用户挑，再发选中的那张；只有一张就直接发。
 
+    只用于「表情名」命中：角色名/画师名命中时按原样随机发一张，不打扰用户。
     返回 True 表示这条命令已经处理完，调用方不该再往下走。
     """
     if not pics:
@@ -455,9 +456,7 @@ async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str, note: 
         return True
 
     candidates = pics[:MAX_LIST_ITEMS]
-    await bot.send(
-        MessageSegment.image(await render_emotion_list(pics, keyword, note, hint="回复「表情N」发送第 N 个"))
-    )
+    await bot.send(MessageSegment.image(await render_emotion_list(pics, keyword, hint="回复「表情N」发送第 N 个")))
     resp = await bot.receive_resp("请回复要发送的表情编号，例如：表情1", timeout=30)
     if resp is None:
         return True
@@ -505,19 +504,19 @@ async def cmd_random(bot: Bot, ev: Event) -> None:
             await _send_from_api(bot, data)
             return
 
-    for pics, note in (
-        (
-            [pic for c in matched_chars for pic in _collect_all_pics(index, char=c)],
-            f"角色「{'/'.join(matched_chars[:2])}」" if matched_chars else "",
-        ),
-        (
-            [pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)],
-            f"画师「{'/'.join(matched_artists[:2])}」" if matched_artists else "",
-        ),
-        (matched_emotions, ""),
-        (matched_emotions_fuzzy, "模糊匹配"),
+    # 只有「表情名」命中才出候选图让用户挑；角色/画师命中照旧随机发一张
+    for pics, pick in (
+        ([pic for c in matched_chars for pic in _collect_all_pics(index, char=c)], False),
+        ([pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)], False),
+        (matched_emotions, True),
+        (matched_emotions_fuzzy, True),
     ):
-        if await _send_with_picker(bot, pics, keyword, note):
+        if not pics:
+            continue
+        if not pick:
+            await _send_pic(bot, random.choice(pics))
+            return
+        if await _send_with_picker(bot, pics, keyword):
             return
 
     await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
@@ -697,19 +696,19 @@ async def cmd_local(bot: Bot, ev: Event) -> None:
     matched_emotions = _match_emotions(index, keyword, fuzzy=False)
     matched_emotions_fuzzy = matched_emotions or _match_emotions(index, keyword, fuzzy=True)
 
-    for pics, note in (
-        (
-            [pic for c in matched_chars for pic in _collect_all_pics(index, char=c)],
-            f"角色「{'/'.join(matched_chars[:2])}」" if matched_chars else "",
-        ),
-        (
-            [pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)],
-            f"画师「{'/'.join(matched_artists[:2])}」" if matched_artists else "",
-        ),
-        (matched_emotions, ""),
-        (matched_emotions_fuzzy, "模糊匹配"),
+    # 与 bq随机表情 一致：只有表情名命中才出候选图，角色/画师命中随机发一张
+    for pics, pick in (
+        ([pic for c in matched_chars for pic in _collect_all_pics(index, char=c)], False),
+        ([pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)], False),
+        (matched_emotions, True),
+        (matched_emotions_fuzzy, True),
     ):
-        if await _send_with_picker(bot, pics, keyword, note):
+        if not pics:
+            continue
+        if not pick:
+            await _send_pic(bot, random.choice(pics))
+            return
+        if await _send_with_picker(bot, pics, keyword):
             return
 
     await bot.send(f"本地没有找到「{keyword}」相关的画师、角色或表情。")
