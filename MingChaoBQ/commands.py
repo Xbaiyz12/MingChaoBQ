@@ -443,10 +443,42 @@ def _parse_emotion_choice(text: str, total: int) -> int | None:
     return value - 1 if 1 <= value <= total else None
 
 
-async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str) -> bool:
+# 画师名下列表时，每个角色最多展示几个
+_PER_CHAR_LIMIT = 10
+
+
+def _sample_by_char(pics: list[PicEntry], per_char: int, limit: int) -> list[PicEntry]:
+    """按角色轮流抽，单个角色最多 per_char 张，总数不超过 limit。
+
+    画师动辄上千张（捏捏 2263 张），顺序取前 N 张会被同一个角色占满；
+    轮流取才能让画师名下的每个角色都露个脸。
+    """
+    buckets: dict[str, list[PicEntry]] = {}
+    for pic in pics:
+        buckets.setdefault(_char_of(pic), []).append(pic)
+
+    picked: list[PicEntry] = []
+    for round_index in range(per_char):
+        for bucket in buckets.values():
+            if round_index >= len(bucket):
+                continue
+            picked.append(bucket[round_index])
+            if len(picked) >= limit:
+                return picked
+    return picked
+
+
+def _pick_candidates(pics: list[PicEntry], note: str) -> tuple[list[PicEntry], str]:
+    """候选列表的取法：画师名下按角色轮流取（每角色上限 10），其余顺序取前 50。"""
+    if not note.startswith("画师"):
+        return pics[:MAX_LIST_ITEMS], note
+    sampled = _sample_by_char(pics, _PER_CHAR_LIMIT, MAX_LIST_ITEMS)
+    return sampled, f"{note} · 每个角色最多 {_PER_CHAR_LIMIT} 个"
+
+
+async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str, note: str = "") -> bool:
     """命中多张时先出缩略图候选让用户挑，再发选中的那张；只有一张就直接发。
 
-    只用于「表情名」命中：角色名/画师名命中时按原样随机发一张，不打扰用户。
     返回 True 表示这条命令已经处理完，调用方不该再往下走。
     """
     if not pics:
@@ -455,8 +487,18 @@ async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str) -> boo
         await _send_pic(bot, pics[0])
         return True
 
-    candidates = pics[:MAX_LIST_ITEMS]
-    await bot.send(MessageSegment.image(await render_emotion_list(pics, keyword, hint="回复「表情N」发送第 N 个")))
+    candidates, sampled_note = _pick_candidates(pics, note)
+    await bot.send(
+        MessageSegment.image(
+            await render_emotion_list(
+                candidates,
+                keyword,
+                sampled_note,
+                hint="回复「表情N」发送第 N 个",
+                total=len(pics),
+            )
+        )
+    )
     resp = await bot.receive_resp("请回复要发送的表情编号，例如：表情1", timeout=30)
     if resp is None:
         return True
@@ -480,6 +522,7 @@ async def cmd_random(bot: Bot, ev: Event) -> None:
     index = await load_index()
 
     if not keyword:
+        # 不带关键词时才问 API：有关键词要出候选列表，交给 API 就看不到清单了
         data = await _try_api()
         if data is not None:
             await _send_from_api(bot, data)
@@ -491,35 +534,11 @@ async def cmd_random(bot: Bot, ev: Event) -> None:
         await _send_pic(bot, random.choice(pics))
         return
 
-    matched_chars = _match_chars(index, keyword)
-    matched_artists = _match_artists(index, keyword)
-    matched_emotions = _match_emotions(index, keyword, fuzzy=False)
-    matched_emotions_fuzzy = matched_emotions or _match_emotions(index, keyword, fuzzy=True)
-
-    # 认得出是角色、或本地完全没有对应素材时交给 API（API 关着就自然回退本地）
-    if matched_chars or (not matched_artists and not matched_emotions_fuzzy):
-        role_param = matched_chars[0] if matched_chars else keyword
-        data = await _try_api(role=role_param)
-        if data is not None:
-            await _send_from_api(bot, data)
-            return
-
-    # 只有「表情名」命中才出候选图让用户挑；角色/画师命中照旧随机发一张
-    for pics, pick in (
-        ([pic for c in matched_chars for pic in _collect_all_pics(index, char=c)], False),
-        ([pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)], False),
-        (matched_emotions, True),
-        (matched_emotions_fuzzy, True),
-    ):
-        if not pics:
-            continue
-        if not pick:
-            await _send_pic(bot, random.choice(pics))
-            return
-        if await _send_with_picker(bot, pics, keyword):
-            return
-
-    await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
+    matched, note = _search_pics(index, keyword)
+    if not matched:
+        await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
+        return
+    await _send_with_picker(bot, matched, keyword, note)
 
 
 def _parse_burst_args(command: str, raw_text: str) -> tuple[int, str]:
@@ -691,50 +710,11 @@ async def cmd_local(bot: Bot, ev: Event) -> None:
         await _send_pic(bot, random.choice(pics))
         return
 
-    matched_chars = _match_chars(index, keyword)
-    matched_artists = _match_artists(index, keyword)
-    matched_emotions = _match_emotions(index, keyword, fuzzy=False)
-    matched_emotions_fuzzy = matched_emotions or _match_emotions(index, keyword, fuzzy=True)
-
-    # 与 bq随机表情 一致：只有表情名命中才出候选图，角色/画师命中随机发一张
-    for pics, pick in (
-        ([pic for c in matched_chars for pic in _collect_all_pics(index, char=c)], False),
-        ([pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)], False),
-        (matched_emotions, True),
-        (matched_emotions_fuzzy, True),
-    ):
-        if not pics:
-            continue
-        if not pick:
-            await _send_pic(bot, random.choice(pics))
-            return
-        if await _send_with_picker(bot, pics, keyword):
-            return
-
-    await bot.send(f"本地没有找到「{keyword}」相关的画师、角色或表情。")
-
-
-@mcbq_sv.on_command("搜索表情", to_ai="按表情名搜索本地表情包并列成一张结果图")
-async def cmd_search(bot: Bot, ev: Event) -> None:
-    if not is_group_allowed(ev.group_id):
-        return
-
-    keyword = _take_keyword(ev)
-    if keyword is None:
-        return
-    if not keyword:
-        await bot.send("请提供搜索关键词，例如：bq搜索表情 比心")
-        return
-
-    index = await load_index()
-
     matched, note = _search_pics(index, keyword)
     if not matched:
-        await bot.send(f"没有找到与「{keyword}」相关的表情、角色或画师。")
+        await bot.send(f"本地没有找到「{keyword}」相关的画师、角色或表情。")
         return
-
-    img_path = await render_emotion_list(matched, keyword, note)
-    await bot.send(MessageSegment.image(img_path))
+    await _send_with_picker(bot, matched, keyword, note)
 
 
 @mcbq_sv.on_command("设置戳一戳角色", to_ai="设置本群戳一戳固定发送的角色，需权限")

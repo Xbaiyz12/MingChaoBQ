@@ -30,8 +30,8 @@ THUMB_BOX = 150
 # 缩略图 150 + 编号 + 表情名 + 画师·角色 三行文字的总高
 CARD_HEIGHT = 240
 CARD_GAP = 10
-# 每个候选都要解码缩略图，30 张已经够选；再多只提示收窄关键词
-MAX_LIST_ITEMS = 30
+# 每个候选都要解码缩略图；50 张是「够挑」与「图不至于太长」之间的折中
+MAX_LIST_ITEMS = 50
 
 
 def _cover(img: Image.Image, width: int, height: int) -> Image.Image:
@@ -100,15 +100,24 @@ def _row_meta(pic: PicEntry) -> str:
 
 
 @to_thread
-def render_emotion_list(items: list[PicEntry], keyword: str, note: str = "", hint: str = "") -> Path:
+def render_emotion_list(
+    items: list[PicEntry],
+    keyword: str,
+    note: str = "",
+    hint: str = "",
+    total: int | None = None,
+) -> Path:
     """把表情候选渲染成缩略图网格，编号（表情1、表情2…）可直接被用户回复引用。
 
+    items 是实际要画的候选（调用方可能已按角色抽样），total 是命中总数，
+    用于副标题的「共 N 个」与底部的「另有 M 个未显示」。
     缩略图取「有内容的那一帧」：很多表情动图开头是空白帧，用第 0 帧会让
     整屏缩略图都是白的，用户没法分辨。
     """
     shown = items[:MAX_LIST_ITEMS]
+    total_count = len(items) if total is None else total
     rows = max(1, -(-len(shown) // GRID_COLS))
-    hidden = len(items) - len(shown)
+    hidden = total_count - len(shown)
 
     width = CANVAS_WIDTH
     height = PADDING * 2 + HEADER_HEIGHT + 18 + rows * CARD_HEIGHT + (rows - 1) * CARD_GAP
@@ -144,7 +153,7 @@ def render_emotion_list(items: list[PicEntry], keyword: str, note: str = "", hin
         title_font,
         TITLE_FILL,
     )
-    parts = [f"共 {len(items)} 个"]
+    parts = [f"共 {total_count} 个"]
     if note:
         parts.append(note)
     if hint:
