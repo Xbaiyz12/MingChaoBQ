@@ -372,7 +372,7 @@ async def on_poke(bot: Bot, ev: Event) -> None:
 # ==================== 用户命令 ====================
 
 
-@mcbq_sv.on_command("戳一戳统计", to_ai="查看戳一戳统计图")
+@mcbq_sv.on_command(("戳一戳统计", "被戳排行", "被戳统计"), to_ai="查看戳一戳统计图")
 async def cmd_poke_statistics(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
@@ -385,7 +385,7 @@ async def cmd_poke_statistics(bot: Bot, ev: Event) -> None:
     await bot.send(MessageSegment.image(await render_poke_statistics(data)))
 
 
-@mcbq_sv.on_command(("表情统计", "表情发送统计"), to_ai="查看角色名发送统计图")
+@mcbq_sv.on_command(("表情统计", "表情发送统计", "表情排行", "发送排行"), to_ai="查看角色名发送统计图")
 async def cmd_role_statistics(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
@@ -399,7 +399,7 @@ async def cmd_help(bot: Bot, ev: Event) -> None:
     await bot.send(MessageSegment.image(await get_help(ev.user_pm)))
 
 
-@mcbq_sv.on_command("列表", to_ai="查看全部画师与角色的概览图")
+@mcbq_sv.on_command(("列表", "图库", "全部表情"), to_ai="查看全部画师与角色的概览图")
 async def cmd_all_list(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
@@ -507,7 +507,7 @@ async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str, note: 
     await _send_pic(bot, candidates[picked])
 
 
-@mcbq_sv.on_command("随机表情", to_ai="随机发送一张鸣潮表情包，可跟画师名/角色名/表情名")
+@mcbq_sv.on_command(("随机表情", "来一张", "随便来"), to_ai="随机发送一张鸣潮表情包，可跟画师名/角色名/表情名")
 async def cmd_random(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
@@ -540,11 +540,7 @@ async def cmd_random(bot: Bot, ev: Event) -> None:
 
 def _parse_burst_args(command: str, raw_text: str) -> tuple[int, str]:
     """解析连发数量（1-5）与查询关键词。"""
-    default_count = 3
-    if command == "五连":
-        default_count = 5
-    elif command == "三连":
-        default_count = 3
+    default_count = 5 if command in ("五连", "来五张") else 3
 
     text = raw_text.strip()
     if not text:
@@ -617,7 +613,7 @@ async def _send_burst_items(bot: Bot, items: list[PicEntry | ApiPic]) -> None:
         await asyncio.sleep(0.3)
 
 
-@mcbq_sv.on_command(("连发", "连发表情", "三连", "五连"), to_ai="连发多张鸣潮表情包（1-5张）")
+@mcbq_sv.on_command(("连发", "连发表情", "三连", "五连", "来三张", "来五张"), to_ai="连发多张鸣潮表情包（1-5张）")
 async def cmd_burst(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
@@ -688,7 +684,7 @@ async def cmd_burst(bot: Bot, ev: Event) -> None:
     await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
 
 
-@mcbq_sv.on_command("本地表情", to_ai="只从本地表情库随机发一张（跳过 API），可跟关键词")
+@mcbq_sv.on_command(("本地表情", "本地来一张"), to_ai="只从本地表情库随机发一张（跳过 API），可跟关键词")
 async def cmd_local(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
@@ -714,7 +710,7 @@ async def cmd_local(bot: Bot, ev: Event) -> None:
     await _send_with_picker(bot, matched, keyword, note)
 
 
-@mcbq_sv.on_command("设置戳一戳角色", to_ai="设置本群戳一戳固定发送的角色，需权限")
+@mcbq_sv.on_command(("设置戳一戳角色", "戳一戳角色"), to_ai="设置本群戳一戳固定发送的角色，需权限")
 async def set_poke_role(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
@@ -747,7 +743,7 @@ async def set_poke_role(bot: Bot, ev: Event) -> None:
 # ==================== 管理命令 ====================
 
 
-@mcbq_admin_sv.on_command("更新索引", to_ai="重新扫描表情包目录并生成索引（仅主人可用）")
+@mcbq_admin_sv.on_command(("更新索引", "刷新图库", "重扫表情"), to_ai="重新扫描表情包目录并生成索引（仅主人可用）")
 async def update_index(bot: Bot, ev: Event) -> None:
     try:
         index = await rebuild_index()
@@ -759,13 +755,13 @@ async def update_index(bot: Bot, ev: Event) -> None:
     await bot.send(f"✅ 索引更新完成！共扫描到 {total} 张表情包。")
 
 
-@mcbq_admin_sv.on_command("开启戳一戳", to_ai="开启戳一戳触发随机表情功能")
+@mcbq_admin_sv.on_command(("开启戳一戳", "打开戳一戳"), to_ai="开启戳一戳触发随机表情功能")
 async def enable_poke(bot: Bot, ev: Event) -> None:
     set_config("mcbq_poke_enable", True)
     await bot.send("✅ 戳一戳随机表情功能已【开启】。")
 
 
-@mcbq_admin_sv.on_command("关闭戳一戳", to_ai="关闭戳一戳触发随机表情功能")
+@mcbq_admin_sv.on_command(("关闭戳一戳", "关掉戳一戳"), to_ai="关闭戳一戳触发随机表情功能")
 async def disable_poke(bot: Bot, ev: Event) -> None:
     set_config("mcbq_poke_enable", False)
     await bot.send("✅ 戳一戳随机表情功能已【关闭】。")
@@ -1054,12 +1050,15 @@ async def _confirm_local_name(bot: Bot, kind: str, raw: str, choices: list[str])
         "添加表情",
         "导入表情",
         "上传表情",
+        "传表情",
+        "加表情",
         "bq添加表情",
         "bq导入表情",
         "bq上传表情",
         "鸣潮添加表情",
         "添加鸣潮表情",
         "上传鸣潮表情",
+        "传鸣潮表情",
     ),
     to_ai="添加表情包到本地表情库（需管理权限）",
 )
