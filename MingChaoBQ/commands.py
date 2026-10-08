@@ -332,6 +332,40 @@ def _take_keyword(ev: Event) -> str | None:
     return None if keyword.endswith("列表") else keyword
 
 
+def _match_artist_char(index: Index, keyword: str) -> tuple[str, str, list[PicEntry]] | None:
+    """把「画师 + 角色」两个词拆出来，命中则返回 (画师, 角色, 该组合下的图)。
+
+    两个词顺序任意、名字可含空格（MIX CRAFT），所以按本地已知名字做最长前缀切分，
+    并要求第二个名字切完后正好用尽整串，避免「捏捏 爱弥斯酱」这种被误判。
+    """
+    artists, chars = _local_names(index)
+
+    def take(text: str, names: list[str]) -> tuple[str, str] | None:
+        for name in sorted(names, key=len, reverse=True):
+            rest = _strip_prefix(text, name)
+            if rest is not None:
+                return name, rest
+        return None
+
+    artist_first = take(keyword, artists)
+    if artist_first is not None:
+        char_part = take(artist_first[1], chars)
+        if char_part is not None and char_part[1] == "":
+            pics = _collect_all_pics(index, artist=artist_first[0], char=char_part[0])
+            if pics:
+                return artist_first[0], char_part[0], pics
+
+    char_first = take(keyword, chars)
+    if char_first is not None:
+        artist_part = take(char_first[1], artists)
+        if artist_part is not None and artist_part[1] == "":
+            pics = _collect_all_pics(index, artist=artist_part[0], char=char_first[0])
+            if pics:
+                return artist_part[0], char_first[0], pics
+
+    return None
+
+
 # ==================== 戳一戳 ====================
 
 
@@ -468,24 +502,31 @@ def _sample_by_char(pics: list[PicEntry], per_char: int, limit: int) -> list[Pic
     return picked
 
 
-def _pick_candidates(pics: list[PicEntry], note: str) -> tuple[list[PicEntry], str]:
+def _pick_candidates(pics: list[PicEntry], note: str, group_by_char: bool) -> tuple[list[PicEntry], str]:
     """候选列表的取法：画师名下按角色轮流取（每角色上限 10），其余顺序取前 50。"""
-    if not note.startswith("画师"):
+    if not group_by_char:
         return pics[:MAX_LIST_ITEMS], note
     sampled = _sample_by_char(pics, _PER_CHAR_LIMIT, MAX_LIST_ITEMS)
     return sampled, f"{note} · 每个角色最多 {_PER_CHAR_LIMIT} 个"
 
 
-async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str, note: str = "") -> None:
+async def _send_with_picker(
+    bot: Bot,
+    pics: list[PicEntry],
+    keyword: str,
+    note: str = "",
+    group_by_char: bool = False,
+) -> None:
     """命中多张时先出缩略图候选让用户挑，再发选中的那张；只有一张就直接发。
 
-    调用方负责判空（pics 为空时不会走到这里）。
+    调用方负责判空（pics 为空时不会走到这里）；group_by_char 用于画师名下的
+    千张图：按角色轮流取，避免整屏都是同一个角色。
     """
     if len(pics) == 1:
         await _send_pic(bot, pics[0])
         return
 
-    candidates, sampled_note = _pick_candidates(pics, note)
+    candidates, sampled_note = _pick_candidates(pics, note, group_by_char)
     await bot.send(
         MessageSegment.image(
             await render_emotion_list(
@@ -531,11 +572,17 @@ async def cmd_random(bot: Bot, ev: Event) -> None:
         await _send_pic(bot, random.choice(pics))
         return
 
+    pair = _match_artist_char(index, keyword)
+    if pair is not None:
+        artist, char, combo = pair
+        await _send_with_picker(bot, combo, f"{artist} {char}", f"画师「{artist}」角色「{char}」")
+        return
+
     matched, note = _search_pics(index, keyword)
     if not matched:
         await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
         return
-    await _send_with_picker(bot, matched, keyword, note)
+    await _send_with_picker(bot, matched, keyword, note, group_by_char=note.startswith("画师"))
 
 
 def _parse_burst_args(command: str, raw_text: str) -> tuple[int, str]:
@@ -703,11 +750,17 @@ async def cmd_local(bot: Bot, ev: Event) -> None:
         await _send_pic(bot, random.choice(pics))
         return
 
+    pair = _match_artist_char(index, keyword)
+    if pair is not None:
+        artist, char, combo = pair
+        await _send_with_picker(bot, combo, f"{artist} {char}", f"画师「{artist}」角色「{char}」")
+        return
+
     matched, note = _search_pics(index, keyword)
     if not matched:
         await bot.send(f"本地没有找到「{keyword}」相关的画师、角色或表情。")
         return
-    await _send_with_picker(bot, matched, keyword, note)
+    await _send_with_picker(bot, matched, keyword, note, group_by_char=note.startswith("画师"))
 
 
 @mcbq_sv.on_command(("设置戳一戳角色", "戳一戳角色"), to_ai="设置本群戳一戳固定发送的角色，需权限")
