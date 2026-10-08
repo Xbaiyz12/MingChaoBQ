@@ -476,16 +476,14 @@ def _pick_candidates(pics: list[PicEntry], note: str) -> tuple[list[PicEntry], s
     return sampled, f"{note} · 每个角色最多 {_PER_CHAR_LIMIT} 个"
 
 
-async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str, note: str = "") -> bool:
+async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str, note: str = "") -> None:
     """命中多张时先出缩略图候选让用户挑，再发选中的那张；只有一张就直接发。
 
-    返回 True 表示这条命令已经处理完，调用方不该再往下走。
+    调用方负责判空（pics 为空时不会走到这里）。
     """
-    if not pics:
-        return False
     if len(pics) == 1:
         await _send_pic(bot, pics[0])
-        return True
+        return
 
     candidates, sampled_note = _pick_candidates(pics, note)
     await bot.send(
@@ -501,13 +499,12 @@ async def _send_with_picker(bot: Bot, pics: list[PicEntry], keyword: str, note: 
     )
     resp = await bot.receive_resp("请回复要发送的表情编号，例如：表情1", timeout=30)
     if resp is None:
-        return True
+        return
     picked = _parse_emotion_choice(resp.text, len(candidates))
     if picked is None:
         await bot.send(f"没看懂「{resp.text.strip() or '空消息'}」，请回复 表情1 ~ 表情{len(candidates)}。")
-        return True
+        return
     await _send_pic(bot, candidates[picked])
-    return True
 
 
 @mcbq_sv.on_command("随机表情", to_ai="随机发送一张鸣潮表情包，可跟画师名/角色名/表情名")

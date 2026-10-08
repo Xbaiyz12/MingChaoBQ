@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFont
+from PIL import Image, ImageFont, ImageSequence
 
 from gsuid_core.utils.fonts.fonts import FONT_ORIGIN_PATH
 
@@ -79,18 +79,19 @@ def load_thumb_frame(path: Path, size: int) -> Image.Image | None:
 
     不能直接用第 0 帧：很多表情动图开头是淡入空白帧（实测帧 0 内容为 0，
     真正的画面在第 19 帧附近），那样列表里会出现一片空白缩略图。
+    帧数走 ImageSequence：n_frames 只在多帧格式类上存在，JPEG 上会抛错。
     """
     try:
         with Image.open(path) as image:
-            frames = getattr(image, "n_frames", 1)
-            if frames <= 1:
-                image.load()
+            total = sum(1 for _ in ImageSequence.Iterator(image))
+            if total <= 1:
+                image.seek(0)
                 thumb = _flatten(image)
             else:
                 best: Image.Image | None = None
                 best_score = -1.0
-                step = max(1, frames // _THUMB_SCAN_FRAMES)
-                for index in range(0, frames, step):
+                step = max(1, total // _THUMB_SCAN_FRAMES)
+                for index in range(0, total, step):
                     image.seek(index)
                     candidate = _flatten(image)
                     score = _content_score(candidate)

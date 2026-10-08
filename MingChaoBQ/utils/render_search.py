@@ -70,19 +70,13 @@ def _draw_text(
     text: str,
     font: FontType,
     fill: tuple[int, int, int],
-    right: int | None = None,
     center: int | None = None,
 ) -> None:
-    """按视觉中线对齐绘制文字；给 right 右对齐、给 center 居中。
-
-    不用 anchor，兼容位图兜底字体。
-    """
+    """按视觉中线对齐绘制文字；给 center 时水平居中。不用 anchor，兼容位图兜底字体。"""
     bbox = font.getbbox(text)
     y = center_y - (bbox[1] + bbox[3]) // 2
     if center is not None:
         x = center - round(font.getlength(text) / 2)
-    elif right is not None:
-        x = right - round(font.getlength(text))
     draw.text((x, y), text, font=font, fill=fill)
 
 
