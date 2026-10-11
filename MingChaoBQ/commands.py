@@ -30,7 +30,7 @@ from .mingchao_config import get_int, get_bool, set_config, get_str_list
 from .utils.user_names import resolve_profiles, fill_missing_profiles
 from .utils.index_types import Index, PicEntry
 from .utils.render_search import MAX_LIST_ITEMS, render_emotion_list
-from .utils.render_overview import render_char_list, render_one_artist, render_artist_overview
+from .utils.render_overview import render_artist_overview
 from .mingchao_help.get_help import get_help
 from .utils.render_statistics import render_poke_statistics, render_role_statistics
 
@@ -270,45 +270,6 @@ def _match_emotions(index: Index, keyword: str, fuzzy: bool = False) -> list[Pic
     return results
 
 
-def _search_pics(index: Index, keyword: str) -> tuple[list[PicEntry], str]:
-    """
-    搜索关键字, 返回 (结果, 列表图上标注的来源)。
-    顺序: 表情精确 → 角色(含别名) → 画师 → 表情模糊 → 角色模糊 → 画师模糊。
-    表情名取自文件名尾部, 角色名不一定出现在表情名里(「今汐」317 张图里没有一条表情名
-    含今汐), 所以必须能按角色/画师兜底; 而精确的角色/画师名要排在"包含关系"的模糊表情名
-    之前——否则画师「捏捏」(2263 张)会被 4 个带"捏捏"的表情名截胡。
-    """
-    exact = _match_emotions(index, keyword, fuzzy=False)
-    if exact:
-        return exact, ""
-
-    chars = _match_chars(index, keyword)
-    char_pics = [pic for name in chars for pic in _collect_all_pics(index, char=name)]
-    if char_pics:
-        return char_pics, f"角色「{'/'.join(chars[:3])}」"
-
-    if keyword in index and keyword != "API":
-        artist_pics = _collect_all_pics(index, artist=keyword)
-        if artist_pics:
-            return artist_pics, f"画师「{keyword}」"
-
-    fuzzy = _match_emotions(index, keyword, fuzzy=True)
-    if fuzzy:
-        return fuzzy, "模糊匹配"
-
-    fuzzy_chars = _match_chars_fuzzy(index, keyword)
-    fuzzy_char_pics = [pic for name in fuzzy_chars for pic in _collect_all_pics(index, char=name)]
-    if fuzzy_char_pics:
-        return fuzzy_char_pics, f"角色「{'/'.join(fuzzy_chars[:3])}」"
-
-    artists = _match_artists(index, keyword)
-    artist_pics = [pic for name in artists for pic in _collect_all_pics(index, artist=name)]
-    if artist_pics:
-        return artist_pics, f"画师「{'/'.join(artists[:3])}」"
-
-    return [], ""
-
-
 def _collect_all_pics(index: Index, artist: str | None = None, char: str | None = None) -> list[PicEntry]:
     """
     从索引里筛选图片，返回带 _artist / _char / _sub 元信息的列表。
@@ -453,17 +414,26 @@ async def cmd_sublist(bot: Bot, ev: Event) -> None:
 
     index = await load_index()
 
+    pair = _match_artist_char(index, keyword)
+    if pair is not None:
+        artist, char, combo = pair
+        await _send_with_picker(bot, combo, f"{artist} {char}", f"画师「{artist}」角色「{char}」")
+        return
+
     matched_chars = _match_chars(index, keyword)
     if matched_chars:
-        await bot.send(MessageSegment.image(await render_char_list(index, matched_chars[0], ev.user_pm)))
-        return
+        pics = [pic for name in matched_chars for pic in _collect_all_pics(index, char=name)]
+        if pics:
+            await _send_with_picker(bot, pics, matched_chars[0], f"角色「{'/'.join(matched_chars[:3])}」")
+            return
 
     matched_artists = _match_artists(index, keyword)
     if matched_artists:
-        img = await render_one_artist(index, matched_artists[0], ev.user_pm)
-        if img is not None:
-            await bot.send(MessageSegment.image(img))
-        return
+        pics = [pic for name in matched_artists for pic in _collect_all_pics(index, artist=name)]
+        if pics:
+            note = f"画师「{'/'.join(matched_artists[:3])}」"
+            await _send_with_picker(bot, pics, matched_artists[0], note, group_by_char=True)
+            return
 
     await bot.send(f"没有找到「{keyword}」相关的画师或角色。发送 bq列表 查看全部。")
 
@@ -560,7 +530,6 @@ async def cmd_random(bot: Bot, ev: Event) -> None:
     index = await load_index()
 
     if not keyword:
-        # 不带关键词时才问 API：有关键词要出候选列表，交给 API 就看不到清单了
         data = await _try_api()
         if data is not None:
             await _send_from_api(bot, data)
@@ -572,17 +541,33 @@ async def cmd_random(bot: Bot, ev: Event) -> None:
         await _send_pic(bot, random.choice(pics))
         return
 
+    matched_chars = _match_chars(index, keyword)
+    matched_artists = _match_artists(index, keyword)
+    matched_emotions = _match_emotions(index, keyword, fuzzy=False)
+    matched_emotions_fuzzy = matched_emotions or _match_emotions(index, keyword, fuzzy=True)
     pair = _match_artist_char(index, keyword)
-    if pair is not None:
-        artist, char, combo = pair
-        await _send_with_picker(bot, combo, f"{artist} {char}", f"画师「{artist}」角色「{char}」")
-        return
 
-    matched, note = _search_pics(index, keyword)
-    if not matched:
-        await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
-        return
-    await _send_with_picker(bot, matched, keyword, note, group_by_char=note.startswith("画师"))
+    # 认得出是角色、或本地完全没有对应素材时先问 API（API 关着就自然回退本地）
+    if matched_chars or (not matched_artists and not pair and not matched_emotions_fuzzy):
+        role_param = matched_chars[0] if matched_chars else keyword
+        data = await _try_api(role=role_param)
+        if data is not None:
+            await _send_from_api(bot, data)
+            return
+
+    # 本命令只负责随机：关键词只用来圈定范围，要列表请用 bqXX列表
+    for pics in (
+        pair[2] if pair else [],
+        [pic for c in matched_chars for pic in _collect_all_pics(index, char=c)],
+        [pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)],
+        matched_emotions,
+        matched_emotions_fuzzy,
+    ):
+        if pics:
+            await _send_pic(bot, random.choice(pics))
+            return
+
+    await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
 
 
 def _parse_burst_args(command: str, raw_text: str) -> tuple[int, str]:
@@ -750,17 +735,25 @@ async def cmd_local(bot: Bot, ev: Event) -> None:
         await _send_pic(bot, random.choice(pics))
         return
 
+    matched_chars = _match_chars(index, keyword)
+    matched_artists = _match_artists(index, keyword)
+    matched_emotions = _match_emotions(index, keyword, fuzzy=False)
+    matched_emotions_fuzzy = matched_emotions or _match_emotions(index, keyword, fuzzy=True)
     pair = _match_artist_char(index, keyword)
-    if pair is not None:
-        artist, char, combo = pair
-        await _send_with_picker(bot, combo, f"{artist} {char}", f"画师「{artist}」角色「{char}」")
-        return
 
-    matched, note = _search_pics(index, keyword)
-    if not matched:
-        await bot.send(f"本地没有找到「{keyword}」相关的画师、角色或表情。")
-        return
-    await _send_with_picker(bot, matched, keyword, note, group_by_char=note.startswith("画师"))
+    # 与 bq随机表情 一致：本命令只负责随机，要列表请用 bqXX列表
+    for pics in (
+        pair[2] if pair else [],
+        [pic for c in matched_chars for pic in _collect_all_pics(index, char=c)],
+        [pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)],
+        matched_emotions,
+        matched_emotions_fuzzy,
+    ):
+        if pics:
+            await _send_pic(bot, random.choice(pics))
+            return
+
+    await bot.send(f"本地没有找到「{keyword}」相关的画师、角色或表情。")
 
 
 @mcbq_sv.on_command(("设置戳一戳角色", "戳一戳角色"), to_ai="设置本群戳一戳固定发送的角色，需权限")
