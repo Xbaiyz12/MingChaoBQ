@@ -86,6 +86,17 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="从 API 获取的表情保存到 data/MingChaoBQ/API/角色名/ 下，可去重",
         data=True,
     ),
+    # ===== 内置表情包 =====
+    "mcbq_builtin_auto_fetch": GsBoolConfig(
+        title="自动下载内置表情包",
+        desc="首次更新索引时自动下载内置素材（约 175MB），让图库不再是 0 张；关掉可用 bq下载表情包 手动拉取",
+        data=True,
+    ),
+    "mcbq_builtin_pack_url": GsStrConfig(
+        title="内置表情包地址",
+        desc="留空使用默认的 GitHub Release 地址；换成国内镜像时填直链 zip",
+        data="",
+    ),
     # ===== 戳一戳 =====
     "mcbq_poke_enable": GsBoolConfig(
         title="启用戳一戳随机表情",

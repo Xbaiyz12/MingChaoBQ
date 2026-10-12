@@ -7,5 +7,8 @@ BQ_ROOT = get_res_path("MingChaoBQ")
 # 索引文件路径
 INDEX_PATH = BQ_ROOT / "index.json"
 
+# 内置表情包的安装标记（记录已装版本，避免每次启动重复下载）
+BUILTIN_MARKER = BQ_ROOT / ".builtin_pack.json"
+
 # 支持的图片格式
 SUPPORTED_EXTS = {".gif", ".png", ".jpg", ".jpeg", ".webp"}

@@ -25,6 +25,7 @@ from .api_client import ApiPic
 from .statistics import record_poke, record_role, get_statistics
 from .utils.cache import new_cache_path
 from .utils.paths import BQ_ROOT
+from .builtin_pack import ensure_pack, need_install
 from .index_generator import count_pics, load_index, rebuild_index
 from .mingchao_config import get_int, get_bool, set_config, get_str_list
 from .utils.user_names import resolve_profiles, fill_missing_profiles
@@ -791,6 +792,13 @@ async def set_poke_role(bot: Bot, ev: Event) -> None:
 
 @mcbq_admin_sv.on_command(("更新索引", "刷新图库", "重扫表情"), to_ai="重新扫描表情包目录并生成索引（仅主人可用）")
 async def update_index(bot: Bot, ev: Event) -> None:
+    # 首次使用：图库是空的，先把内置表情包拉下来，否则扫出来是 0 张
+    if need_install() and get_bool("mcbq_builtin_auto_fetch"):
+        await bot.send("📦 正在下载内置表情包（约 175MB），首次使用会慢一些，请稍候…")
+        _, note = await ensure_pack()
+        if note:
+            await bot.send(note)
+
     try:
         index = await rebuild_index()
     except OSError as e:
@@ -799,6 +807,25 @@ async def update_index(bot: Bot, ev: Event) -> None:
 
     total = count_pics(index)
     await bot.send(f"✅ 索引更新完成！共扫描到 {total} 张表情包。")
+
+
+@mcbq_admin_sv.on_command(
+    ("下载表情包", "下载内置表情", "拉取表情包"),
+    to_ai="下载内置表情包素材并重建索引（仅主人可用）",
+)
+async def download_builtin_pack(bot: Bot, ev: Event) -> None:
+    await bot.send("📦 开始下载内置表情包（约 175MB），请稍候…")
+    installed, note = await ensure_pack(force=True)
+    await bot.send(note or "📦 内置表情包已是最新。")
+    if not installed:
+        return
+
+    try:
+        index = await rebuild_index()
+    except OSError as e:
+        await bot.send(f"❌ 索引生成失败：{e}")
+        return
+    await bot.send(f"✅ 索引已更新，共 {count_pics(index)} 张表情包。")
 
 
 @mcbq_admin_sv.on_command(("开启戳一戳", "打开戳一戳"), to_ai="开启戳一戳触发随机表情功能")
