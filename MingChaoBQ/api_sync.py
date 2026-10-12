@@ -75,6 +75,12 @@ async def save_api_pic_to_local(data: ApiPic) -> Path | None:
     save_dir = _save_dir_for(data["role"])
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    # 这个 id 已经下过就直接复用，省掉一次完整下载（批量拉取时差别很大）
+    stem = safe_name(data["name"])
+    existing = next(iter(save_dir.glob(f"{stem}_*")), None)
+    if existing is not None:
+        return existing
+
     url = data["url"]
     suffix = data["suffix"]
     tmp_path = save_dir / f"tmp_{hashlib.md5(url.encode('utf-8'), usedforsecurity=False).hexdigest()[:10]}{suffix}"

@@ -474,8 +474,8 @@ def _parse_emotion_choice(text: str, total: int) -> int | None:
 _PER_CHAR_LIMIT = 10
 # 「拉取」单次上限的默认值，实际以控制台配置 mcbq_site_fetch_max 为准
 _SITE_FETCH_MAX = 100
-# 小站图片下载并发数（ticket 有时效，串行会过期）
-_SITE_CONCURRENCY = 5
+# 小站图片下载并发数（ticket 有时效，串行会过期；下载是主要耗时，所以开大些）
+_SITE_CONCURRENCY = 10
 # 小站清单翻页上限（每页 50 条）
 _SITE_MAX_PAGES = 20
 # 这些写法等同「画师榜」；因为 on_suffix「列表」会抢先，得在 cmd_sublist 里转回去
@@ -690,36 +690,64 @@ def _count_files(root: Path) -> int:
     return sum(1 for p in root.rglob("*") if p.is_file())
 
 
-async def _download_site_emojis(items: list[site_api.SiteEmoji], api_root: Path) -> int:
-    """并发下载小站给的 ticket 链接（ticket 有时效，不能串行慢慢来）。
+def _role_file_counts(api_root: Path) -> dict[str, int]:
+    """每个角色目录的文件数，用来算「这次给各角色各加了几张」。"""
+    counts: dict[str, int] = {}
+    if not api_root.exists():
+        return counts
+    for role_dir in api_root.iterdir():
+        if role_dir.is_dir():
+            counts[role_dir.name] = sum(1 for p in role_dir.iterdir() if p.is_file())
+    return counts
+
+
+def _format_role_detail(added: dict[str, int], unit: str = "张", limit: int = 15) -> str:
+    """把 {角色: 数量} 排成明细行，超过 limit 个就折叠尾巴。"""
+    ordered = sorted(added.items(), key=lambda kv: (-kv[1], kv[0]))
+    if not ordered:
+        return ""
+    head = "、".join(f"{role} {n} {unit}" for role, n in ordered[:limit])
+    if len(ordered) > limit:
+        rest = sum(n for _, n in ordered[limit:])
+        head += f" 等 {len(ordered) - limit} 个角色共 {rest} {unit}"
+    return head
+
+
+async def _download_site_emojis(items: list[site_api.SiteEmoji], api_root: Path) -> dict[str, int]:
+    """并发下载小站给的 ticket 链接，返回 {角色: 新增张数}。
 
     每张图按它自己的角色归档：一个包里可能混着多个角色的表情，
-    全塞进同一个目录会让别的角色搜不到。
+    全塞进同一个目录会让别的角色搜不到。已经下过的 id 直接跳过，不再重复下载。
     """
     sem = asyncio.Semaphore(_SITE_CONCURRENCY)
+    added: dict[str, int] = {}
 
-    async def one(item: site_api.SiteEmoji) -> int:
-        role_dir = api_root / safe_name(item["character"] or _UNKNOWN_ROLE)
+    async def one(item: site_api.SiteEmoji) -> None:
+        role = item["character"] or _UNKNOWN_ROLE
+        role_dir = api_root / safe_name(role)
+        stem = safe_name(item["id"])
+        if role_dir.exists() and next(iter(role_dir.glob(f"{stem}_*")), None) is not None:
+            return
         role_dir.mkdir(parents=True, exist_ok=True)
         suffix = f".{item['format']}" if item["format"] else ".gif"
-        tmp = role_dir / f"tmp_{safe_name(item['id'])}{suffix}"
+        tmp = role_dir / f"tmp_{stem}{suffix}"
         try:
             async with sem:
                 ok = await download_to_url(item["url"], tmp)
             if not ok:
-                return 0
+                return
             # 站点同一张图可能给不同版本，光看名字不够，按内容 md5 去重才能和 API 那条路对上
             digest = await file_md5(tmp)
-            target = role_dir / f"{safe_name(item['id'])}_{digest}{suffix}"
+            target = role_dir / f"{stem}_{digest}{suffix}"
             if target.exists():
-                return 0
+                return
             shutil.move(tmp, target)
-            return 1
+            added[role] = added.get(role, 0) + 1
         finally:
             tmp.unlink(missing_ok=True)
 
-    results = await asyncio.gather(*(one(item) for item in items))
-    return sum(results)
+    await asyncio.gather(*(one(item) for item in items))
+    return added
 
 
 async def _collect_site_emojis(character: str = "", artist: str = "", want: int = 20) -> list[site_api.SiteEmoji]:
@@ -750,20 +778,19 @@ async def _fetch_by_emojis(
         await bot.send("没有取到表情清单（接口可能暂时不可用），稍后再试。")
         return
 
-    before = await to_thread(_count_files)(api_root)
-    added = await _download_site_emojis(emojis, api_root)
+    added_map = await _download_site_emojis(emojis, api_root)
+    added = sum(added_map.values())
     if added == 0:
         await bot.send(f"「{label}」没有新增（这 {len(emojis)} 张本地都有了）。")
         return
 
     index = await rebuild_index()
     hint = f"，小站共 {total_hint} 张" if total_hint else ""
-    roles = sorted({e["character"] for e in emojis if e["character"]})
-    role_note = f"，涉及 {len(roles)} 个角色" if len(roles) > 1 else ""
-    logger.info(f"[MingChaoBQ·小站] 拉取「{label}」新增 {added} 张（{before} -> {_count_files(api_root)}）")
+    logger.info(f"[MingChaoBQ·小站] 拉取「{label}」新增 {added} 张：{added_map}")
     await bot.send(
-        f"✅ 已拉取「{label}」{added} 张新表情（本次 {len(emojis)} 张候选{hint}{role_note}），"
-        f"已按各自角色存入 API/<角色>/，当前索引共 {count_pics(index)} 张。"
+        f"✅ 已拉取「{label}」{added} 张新表情（本次 {len(emojis)} 张候选{hint}）\n"
+        f"📂 各角色：{_format_role_detail(added_map)}\n"
+        f"所有图按各自角色存入 API/<角色>/，当前索引共 {count_pics(index)} 张。"
     )
 
 
@@ -788,7 +815,9 @@ async def cmd_fetch_role(bot: Bot, ev: Event) -> None:
         await bot.send(f"小站上没有找到「{role}」，可先用 bq网站搜索 {role} 看看。")
         return
     role_name = hit["name"]
-    await bot.send(f"📥 开始拉取「{role_name}」：目标 {want} 张，小站共 {hit['count']} 张，请稍候…")
+    await bot.send(
+        f"📥 开始拉取「{role_name}」：目标 {want} 张，小站共 {hit['count']} 张（已经下过的会自动跳过），请稍候…"
+    )
     await _fetch_by_emojis(bot, role_name, character=role_name, want=want, total_hint=hit["count"])
 
 
@@ -823,11 +852,13 @@ async def cmd_fetch_artist(bot: Bot, ev: Event) -> None:
 
     if character:
         label = f"{hit['name']} 画的 {character}"
-        await bot.send(f"📥 开始拉取「{label}」：目标 {want} 张，请稍候…")
+        await bot.send(f"📥 开始拉取「{label}」：目标 {want} 张（已经下过的会自动跳过），请稍候…")
         await _fetch_by_emojis(bot, label, character=character, artist=hit["name"], want=want)
         return
 
-    await bot.send(f"📥 开始按画师拉取「{hit['name']}」：目标 {want} 张，小站共 {hit['count']} 张，请稍候…")
+    await bot.send(
+        f"📥 开始按画师拉取「{hit['name']}」：目标 {want} 张，小站共 {hit['count']} 张（已经下过的会自动跳过），请稍候…"
+    )
     await _fetch_by_emojis(bot, hit["name"], artist=hit["name"], want=want, total_hint=hit["count"])
 
 
@@ -885,10 +916,11 @@ async def cmd_fetch_pack(bot: Bot, ev: Event) -> None:
         return
 
     pack_slug = hit["slug"]
-    await bot.send(f"📥 开始拉取表情包「{hit['title']}」（小站共 {hit['count']} 张），请稍候…")
+    role_hint = "/".join(hit["characters"][:3]) or "各角色"
+    await bot.send(f"📥 开始拉取表情包「{hit['title']}」（小站共 {hit['count']} 张，涉及 {role_hint}），请稍候…")
 
     api_root = BQ_ROOT / API_DIR_NAME
-    before = await to_thread(_count_files)(api_root)
+    before_map = await to_thread(_role_file_counts)(api_root)
 
     seen: set[str] = set()
     target_count = min(want, hit["count"]) if hit["count"] else want
@@ -900,15 +932,21 @@ async def cmd_fetch_pack(bot: Bot, ev: Event) -> None:
             break
         seen.add(data["name"])
 
-    added = max(0, await to_thread(_count_files)(api_root) - before)
+    after_map = await to_thread(_role_file_counts)(api_root)
+    added_map = {
+        role: count - before_map.get(role, 0) for role, count in after_map.items() if count > before_map.get(role, 0)
+    }
+    added = sum(added_map.values())
     if added == 0:
         await bot.send("没有拉到新表情（可能都已在本地，或接口暂时不可用）。")
         return
 
     index = await rebuild_index()
+    logger.info(f"[MingChaoBQ·小站] 拉取表情包「{hit['title']}」新增 {added} 张：{added_map}")
     await bot.send(
-        f"✅ 已拉取表情包「{hit['title']}」{added} 张，已按每张图自己的角色存入 API/<角色>/，"
-        f"当前索引共 {count_pics(index)} 张。"
+        f"✅ 已拉取表情包「{hit['title']}」{added} 张\n"
+        f"📂 各角色：{_format_role_detail(added_map)}\n"
+        f"所有图按各自角色存入 API/<角色>/，当前索引共 {count_pics(index)} 张。"
     )
 
 
