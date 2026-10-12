@@ -465,8 +465,12 @@ def _parse_emotion_choice(text: str, total: int) -> int | None:
 
 # 画师名下列表时，每个角色最多展示几个
 _PER_CHAR_LIMIT = 10
-# 「拉取角色」一次最多拉多少张（逐张请求，太多会刷屏又慢）
+# 「拉取」一次最多拉多少张（逐张请请求很慢，太多会刷屏）
 _SITE_FETCH_MAX = 100
+# 小站图片下载并发数（ticket 有时效，串行会过期）
+_SITE_CONCURRENCY = 5
+# 小站清单翻页上限（每页 50 条）
+_SITE_MAX_PAGES = 20
 
 
 def _sample_by_char(pics: list[PicEntry], per_char: int, limit: int) -> list[PicEntry]:
@@ -631,7 +635,67 @@ async def cmd_site_search(bot: Bot, ev: Event) -> None:
             artist = "/".join(pack["artists"][:2]) or "官方转发"
             lines.append(f"  {pack['title']}（{pack['count']} 张 · {artist}）")
     lines.append(f"\n拉到本地：bq拉取角色 {keyword} 30")
+    lines.append("按画师拉取：bq拉取画师 <画师名> 30")
     await bot.send("\n".join(lines))
+
+
+async def _download_site_emojis(items: list[site_api.SiteEmoji], save_dir: Path) -> int:
+    """并发下载小站给的 ticket 链接（ticket 有时效，不能串行慢慢来）。"""
+    save_dir.mkdir(parents=True, exist_ok=True)
+    sem = asyncio.Semaphore(_SITE_CONCURRENCY)
+
+    async def one(item: site_api.SiteEmoji) -> int:
+        suffix = f".{item['format']}" if item["format"] else ".gif"
+        target = save_dir / f"{safe_name(item['id'])}{suffix}"
+        if target.exists():
+            return 0
+        async with sem:
+            ok = await download_to_url(item["url"], target)
+        return 1 if ok else 0
+
+    results = await asyncio.gather(*(one(item) for item in items))
+    return sum(results)
+
+
+async def _collect_site_emojis(character: str = "", artist: str = "", want: int = 20) -> list[site_api.SiteEmoji]:
+    """翻页收集清单，够数就停（emojis 每页上限 50）。"""
+    out: list[site_api.SiteEmoji] = []
+    page = 1
+    while len(out) < want and page <= _SITE_MAX_PAGES:
+        batch = await site_api.list_emojis(character=character, artist=artist, page=page)
+        if not batch:
+            break
+        out.extend(batch)
+        page += 1
+    return out[:want]
+
+
+async def _fetch_by_emojis(
+    bot: Bot,
+    label: str,
+    character: str = "",
+    artist: str = "",
+    want: int = 20,
+    total_hint: int = 0,
+) -> None:
+    """按角色/画师批量拉图：一次拿 50 条清单，再并发下载。"""
+    save_dir = BQ_ROOT / API_DIR_NAME / safe_name(character or artist or label)
+    emojis = await _collect_site_emojis(character=character, artist=artist, want=want)
+    if not emojis:
+        await bot.send("没有取到表情清单（接口可能暂时不可用），稍后再试。")
+        return
+
+    added = await _download_site_emojis(emojis, save_dir)
+    if added == 0:
+        await bot.send(f"「{label}」没有新增（这 {len(emojis)} 张本地都有了）。")
+        return
+
+    index = await rebuild_index()
+    hint = f"，小站共 {total_hint} 张" if total_hint else ""
+    await bot.send(
+        f"✅ 已拉取「{label}」{added} 张新表情（本次 {len(emojis)} 张候选{hint}），"
+        f"存放在 {save_dir.relative_to(BQ_ROOT).as_posix()}/，当前索引共 {count_pics(index)} 张。"
+    )
 
 
 @mcbq_admin_sv.on_command(
@@ -655,31 +719,104 @@ async def cmd_fetch_role(bot: Bot, ev: Event) -> None:
         await bot.send(f"小站上没有找到「{role}」，可先用 bq网站搜索 {role} 看看。")
         return
     role_name = hit["name"]
-
-    # 站点图片是 Cloudflare + 一次性 ticket，拿不到批量清单，只能逐张取
     await bot.send(f"📥 开始拉取「{role_name}」：目标 {want} 张，小站共 {hit['count']} 张，请稍候…")
+    await _fetch_by_emojis(bot, role_name, character=role_name, want=want, total_hint=hit["count"])
 
-    save_dir = BQ_ROOT / API_DIR_NAME / safe_name(role_name)
+
+@mcbq_admin_sv.on_command(
+    ("拉取画师", "按画师拉取"),
+    to_ai="从呜哇小站按画师拉取表情到本地并重建索引（仅主人可用）",
+)
+async def cmd_fetch_artist(bot: Bot, ev: Event) -> None:
+    args = ev.text.strip().split()
+    if not args:
+        await bot.send("请提供画师名（可用 bq画师列表 查看），例如：bq拉取画师 腐朽的书 30")
+        return
+
+    artist = args[0]
+    want = 20
+    if len(args) > 1 and args[1].isdigit():
+        want = min(max(int(args[1]), 1), _SITE_FETCH_MAX)
+
+    artists = await site_api.list_artists(limit=100)
+    hit = next((a for a in artists if a["name"] == artist), None)
+    if hit is None:
+        near = "、".join(a["name"] for a in artists[:10])
+        await bot.send(f"小站上没有叫「{artist}」的画师。部分画师：{near}（可用 bq画师列表 看全部）")
+        return
+
+    await bot.send(f"📥 开始按画师拉取「{hit['name']}」：目标 {want} 张，小站共 {hit['count']} 张，请稍候…")
+    await _fetch_by_emojis(bot, hit["name"], artist=hit["name"], want=want, total_hint=hit["count"])
+
+
+@mcbq_sv.on_command(("画师列表", "小站画师"), to_ai="查看呜哇小站上的画师列表")
+async def cmd_artist_list(bot: Bot, ev: Event) -> None:
+    if not is_group_allowed(ev.group_id):
+        return
+
+    artists = await site_api.list_artists(limit=100)
+    if not artists:
+        await bot.send("暂时取不到小站画师列表，稍后再试。")
+        return
+
+    ordered = sorted(artists, key=lambda a: a["count"], reverse=True)
+    lines = [f"🎨 呜哇小站画师榜（共 {len(ordered)} 位）"]
+    for idx, item in enumerate(ordered[:20], 1):
+        lines.append(f"{idx:>2}. {item['name']}：{item['count']} 张 · {item['packCount']} 个包")
+    lines.append("\n按画师拉取：bq拉取画师 <画师名> 30")
+    await bot.send("\n".join(lines))
+
+
+@mcbq_admin_sv.on_command(
+    ("拉取表情包", "拉取包", "按包拉取"),
+    to_ai="从呜哇小站按指定表情包拉取表情到本地（仅主人可用）",
+)
+async def cmd_fetch_pack(bot: Bot, ev: Event) -> None:
+    args = ev.text.strip().split()
+    if not args:
+        await bot.send("请提供包名或 slug，例如：bq拉取表情包 wuwa-1-jinhsi")
+        return
+
+    key = args[0]
+    want = 20
+    if len(args) > 1 and args[1].isdigit():
+        want = min(max(int(args[1]), 1), _SITE_FETCH_MAX)
+
+    packs = await site_api.list_packs_by_character(key, limit=20)
+    hit = next(
+        (p for p in packs if p["slug"] == key or p["title"].strip() == key or key in p["title"]),
+        None,
+    )
+    if hit is None:
+        await bot.send(f"没有找到表情包「{key}」，可先用 bq网站搜索 {key} 看看包名。")
+        return
+
+    pack_slug = hit["slug"]
+    await bot.send(f"📥 开始拉取表情包「{hit['title']}」（小站共 {hit['count']} 张），请稍候…")
+
+    save_dir = BQ_ROOT / API_DIR_NAME / safe_name(hit["characters"][0] if hit["characters"] else key)
     save_dir.mkdir(parents=True, exist_ok=True)
     before = len(list(save_dir.iterdir()))
 
     seen: set[str] = set()
+    target_count = min(want, hit["count"]) if hit["count"] else want
     rounds = 0
-    while len(seen) < want and rounds < want * 3:
+    while len(seen) < target_count and rounds < want * 3:
         rounds += 1
-        data = await fetch_and_save(role=role_name)
+        data = await fetch_and_save(pack=pack_slug)
         if data is None:
             break
         seen.add(data["name"])
 
     added = max(0, len(list(save_dir.iterdir())) - before)
     if added == 0:
-        await bot.send("没有拉到新表情（可能都已在本地，或接口暂时不可用，稍后再试）。")
+        await bot.send("没有拉到新表情（可能都已在本地，或接口暂时不可用）。")
         return
 
     index = await rebuild_index()
     await bot.send(
-        f"✅ 已拉取「{role_name}」{added} 张新表情，存放在 API/{role_name}/，当前索引共 {count_pics(index)} 张。"
+        f"✅ 已拉取表情包「{hit['title']}」{added} 张，"
+        f"存放在 {save_dir.relative_to(BQ_ROOT).as_posix()}/，当前索引共 {count_pics(index)} 张。"
     )
 
 

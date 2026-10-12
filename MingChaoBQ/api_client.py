@@ -82,12 +82,22 @@ class BqApiClient:
             headers["Authorization"] = "Bearer " + self.token
         return headers
 
-    async def fetch_random_json(self, role: str = "", max_retry: int = 3) -> ApiPicInfo | None:
-        """取一条随机图 JSON。DNS 偶发解析失败时自动重试。"""
+    async def fetch_random_json(
+        self,
+        role: str = "",
+        artist: str = "",
+        pack: str = "",
+        max_retry: int = 3,
+    ) -> ApiPicInfo | None:
+        """取一条随机图 JSON。role/artist/pack 三者可任选（站点按「任一条件」命中）。"""
         url = self.base_url + self.random_path
         params: dict[str, str] = {}
         if role:
             params[self.character_param] = role
+        if artist:
+            params["artist"] = artist
+        if pack:
+            params["pack"] = pack
 
         data: object = None
         for attempt in range(max_retry):

@@ -77,9 +77,9 @@ async def save_api_pic_to_local(data: ApiPic) -> Path | None:
     return final_path
 
 
-async def fetch_and_save(role: str = "") -> ApiPic | None:
+async def fetch_and_save(role: str = "", artist: str = "", pack: str = "") -> ApiPic | None:
     """从 API 取一张，按配置保存到本地，返回带 saved_path 的记录。"""
-    data = await get_client().fetch_random_json(role=role)
+    data = await get_client().fetch_random_json(role=role, artist=artist, pack=pack)
     if not data:
         return None
 
