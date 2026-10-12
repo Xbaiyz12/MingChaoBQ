@@ -19,7 +19,8 @@ from gsuid_core.data_store import get_res_path
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 
-from .api_sync import safe_name, fetch_and_save, download_to_url
+from . import site_api
+from .api_sync import API_DIR_NAME, safe_name, fetch_and_save, download_to_url
 from .whitelist import get_group_role, set_group_role, is_group_allowed
 from .api_client import ApiPic
 from .statistics import record_poke, record_role, get_statistics
@@ -464,6 +465,8 @@ def _parse_emotion_choice(text: str, total: int) -> int | None:
 
 # 画师名下列表时，每个角色最多展示几个
 _PER_CHAR_LIMIT = 10
+# 「拉取角色」一次最多拉多少张（逐张请求，太多会刷屏又慢）
+_SITE_FETCH_MAX = 100
 
 
 def _sample_by_char(pics: list[PicEntry], per_char: int, limit: int) -> list[PicEntry]:
@@ -582,7 +585,102 @@ async def cmd_random(bot: Bot, ev: Event) -> None:
             await _send_pic(bot, random.choice(pics))
             return
 
-    await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
+    hint = await _site_hint(keyword)
+    await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。{hint}")
+
+
+async def _site_hint(keyword: str) -> str:
+    """本地没找到时去小站看一眼，告诉用户可以到哪里补素材。"""
+    if not keyword.strip():
+        return ""
+    hit = await site_api.search_characters(keyword, limit=3)
+    if not hit:
+        return ""
+    top = hit[0]
+    return (
+        f"\n小站上有「{top['name']}」（{top['count']} 张 · {top['packCount']} 个包），"
+        f"可用 bq拉取角色 {top['name']} 拉到本地。"
+    )
+
+
+@mcbq_sv.on_command(("网站搜索", "小站搜索"), to_ai="搜索呜哇小站上的角色与表情包")
+async def cmd_site_search(bot: Bot, ev: Event) -> None:
+    if not is_group_allowed(ev.group_id):
+        return
+
+    keyword = ev.text.strip()
+    if not keyword:
+        await bot.send("请提供关键词，例如：bq网站搜索 今汐")
+        return
+
+    chars = await site_api.search_characters(keyword, limit=10)
+    packs = await site_api.list_packs_by_character(keyword, limit=15)
+    if not chars and not packs:
+        await bot.send(f"小站上没有找到与「{keyword}」相关的角色或表情包。")
+        return
+
+    lines = [f"🔍 呜哇小站 · 搜索「{keyword}」"]
+    if chars:
+        lines.append(f"\n【角色】匹配到 {len(chars)} 个")
+        for item in chars[:8]:
+            lines.append(f"  {item['name']}：{item['count']} 张 · {item['packCount']} 个包")
+    if packs:
+        total = sum(item["count"] for item in packs)
+        lines.append(f"\n【表情包】{len(packs)} 个，合计 {total} 张")
+        for pack in packs[:10]:
+            artist = "/".join(pack["artists"][:2]) or "官方转发"
+            lines.append(f"  {pack['title']}（{pack['count']} 张 · {artist}）")
+    lines.append(f"\n拉到本地：bq拉取角色 {keyword} 30")
+    await bot.send("\n".join(lines))
+
+
+@mcbq_admin_sv.on_command(
+    ("拉取角色", "网站拉取", "从网站拉取"),
+    to_ai="从呜哇小站拉取某角色的表情到本地并重建索引（仅主人可用）",
+)
+async def cmd_fetch_role(bot: Bot, ev: Event) -> None:
+    args = ev.text.strip().split()
+    if not args:
+        await bot.send("请提供角色名，例如：bq拉取角色 今汐 30")
+        return
+
+    role = args[0]
+    want = 20
+    if len(args) > 1 and args[1].isdigit():
+        want = min(max(int(args[1]), 1), _SITE_FETCH_MAX)
+
+    chars = await site_api.search_characters(role, limit=5)
+    hit = next((c for c in chars if c["name"] == role), chars[0] if chars else None)
+    if hit is None:
+        await bot.send(f"小站上没有找到「{role}」，可先用 bq网站搜索 {role} 看看。")
+        return
+    role_name = hit["name"]
+
+    # 站点图片是 Cloudflare + 一次性 ticket，拿不到批量清单，只能逐张取
+    await bot.send(f"📥 开始拉取「{role_name}」：目标 {want} 张，小站共 {hit['count']} 张，请稍候…")
+
+    save_dir = BQ_ROOT / API_DIR_NAME / safe_name(role_name)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    before = len(list(save_dir.iterdir()))
+
+    seen: set[str] = set()
+    rounds = 0
+    while len(seen) < want and rounds < want * 3:
+        rounds += 1
+        data = await fetch_and_save(role=role_name)
+        if data is None:
+            break
+        seen.add(data["name"])
+
+    added = max(0, len(list(save_dir.iterdir())) - before)
+    if added == 0:
+        await bot.send("没有拉到新表情（可能都已在本地，或接口暂时不可用，稍后再试）。")
+        return
+
+    index = await rebuild_index()
+    await bot.send(
+        f"✅ 已拉取「{role_name}」{added} 张新表情，存放在 API/{role_name}/，当前索引共 {count_pics(index)} 张。"
+    )
 
 
 def _parse_burst_args(command: str, raw_text: str) -> tuple[int, str]:
