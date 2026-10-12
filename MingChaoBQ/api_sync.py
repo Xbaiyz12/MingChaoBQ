@@ -44,6 +44,21 @@ def _file_md5(path: Path) -> str:
     return digest.hexdigest()[:10]
 
 
+async def file_md5(path: Path) -> str:
+    """文件内容 md5 前 10 位，用于按内容去重（ticket URL 每次都变，不能按 URL 判重）。"""
+    return await _file_md5(path)
+
+
+def clean_tmp_files(root: Path) -> int:
+    """清理中断遗留的下载临时文件（超时取消时 finally 来不及跑的历史残留）。"""
+    removed = 0
+    for path in root.rglob("tmp_*"):
+        if path.is_file():
+            path.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
 async def download_to_url(url: str, save_path: Path) -> bool:
     """下载入口，调用方不用自己拼 client。"""
     return await get_client().download(url, save_path)
@@ -64,17 +79,18 @@ async def save_api_pic_to_local(data: ApiPic) -> Path | None:
     suffix = data["suffix"]
     tmp_path = save_dir / f"tmp_{hashlib.md5(url.encode('utf-8'), usedforsecurity=False).hexdigest()[:10]}{suffix}"
 
-    if not await get_client().download(url, tmp_path):
-        tmp_path.unlink(missing_ok=True)
-        return None
-
-    digest = await _file_md5(tmp_path)
-    final_path = save_dir / f"{safe_name(data['name'])}_{digest}{suffix}"
-    if final_path.exists():
-        tmp_path.unlink(missing_ok=True)
-    else:
+    try:
+        if not await get_client().download(url, tmp_path):
+            return None
+        digest = await _file_md5(tmp_path)
+        final_path = save_dir / f"{safe_name(data['name'])}_{digest}{suffix}"
+        if final_path.exists():
+            return final_path
         shutil.move(tmp_path, final_path)
-    return final_path
+        return final_path
+    finally:
+        # 下载被超时取消时也要清掉临时文件，否则残留会越积越多
+        tmp_path.unlink(missing_ok=True)
 
 
 async def fetch_and_save(role: str = "", artist: str = "", pack: str = "") -> ApiPic | None:

@@ -4,6 +4,7 @@ import re
 import json
 import time
 import random
+import shutil
 import asyncio
 from typing import TypedDict
 from pathlib import Path
@@ -12,6 +13,7 @@ import aiofiles
 
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
+from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.models import Event, Message
 from gsuid_core.segment import MessageSegment
@@ -20,7 +22,7 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 
 from . import site_api
-from .api_sync import API_DIR_NAME, safe_name, fetch_and_save, download_to_url
+from .api_sync import API_DIR_NAME, file_md5, safe_name, fetch_and_save, clean_tmp_files, download_to_url
 from .whitelist import get_group_role, set_group_role, is_group_allowed
 from .api_client import ApiPic
 from .statistics import record_poke, record_role, get_statistics
@@ -686,12 +688,21 @@ async def _download_site_emojis(items: list[site_api.SiteEmoji], save_dir: Path)
 
     async def one(item: site_api.SiteEmoji) -> int:
         suffix = f".{item['format']}" if item["format"] else ".gif"
-        target = save_dir / f"{safe_name(item['id'])}{suffix}"
-        if target.exists():
-            return 0
-        async with sem:
-            ok = await download_to_url(item["url"], target)
-        return 1 if ok else 0
+        tmp = save_dir / f"tmp_{safe_name(item['id'])}{suffix}"
+        try:
+            async with sem:
+                ok = await download_to_url(item["url"], tmp)
+            if not ok:
+                return 0
+            # 站点同一张图可能给不同版本，光看名字不够，按内容 md5 去重才能和 API 那条路对上
+            digest = await file_md5(tmp)
+            target = save_dir / f"{safe_name(item['id'])}_{digest}{suffix}"
+            if target.exists():
+                return 0
+            shutil.move(tmp, target)
+            return 1
+        finally:
+            tmp.unlink(missing_ok=True)
 
     results = await asyncio.gather(*(one(item) for item in items))
     return sum(results)
@@ -1097,6 +1108,11 @@ async def update_index(bot: Bot, ev: Event) -> None:
         _, note = await ensure_pack()
         if note:
             await bot.send(note)
+
+    # 顺手清掉下载中断留下的临时文件
+    removed = await to_thread(clean_tmp_files)(BQ_ROOT)
+    if removed:
+        logger.info(f"[MingChaoBQ·索引] 清理 {removed} 个下载残留临时文件")
 
     try:
         index = await rebuild_index()
