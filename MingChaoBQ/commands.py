@@ -794,7 +794,7 @@ async def set_poke_role(bot: Bot, ev: Event) -> None:
 async def update_index(bot: Bot, ev: Event) -> None:
     # 首次使用：图库是空的，先把内置表情包拉下来，否则扫出来是 0 张
     if need_install() and get_bool("mcbq_builtin_auto_fetch"):
-        await bot.send("📦 正在下载内置表情包（约 175MB），首次使用会慢一些，请稍候…")
+        await bot.send("📦 正在下载内置表情包（约 143MB），首次使用会慢一些，请稍候…")
         _, note = await ensure_pack()
         if note:
             await bot.send(note)
@@ -814,7 +814,7 @@ async def update_index(bot: Bot, ev: Event) -> None:
     to_ai="下载内置表情包素材并重建索引（仅主人可用）",
 )
 async def download_builtin_pack(bot: Bot, ev: Event) -> None:
-    await bot.send("📦 开始下载内置表情包（约 175MB），请稍候…")
+    await bot.send("📦 开始下载内置表情包（约 143MB），请稍候…")
     installed, note = await ensure_pack(force=True)
     await bot.send(note or "📦 内置表情包已是最新。")
     if not installed:

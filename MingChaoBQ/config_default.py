@@ -89,7 +89,7 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
     # ===== 内置表情包 =====
     "mcbq_builtin_auto_fetch": GsBoolConfig(
         title="自动下载内置表情包",
-        desc="首次更新索引时自动下载内置素材（约 175MB），让图库不再是 0 张；关掉可用 bq下载表情包 手动拉取",
+        desc="首次更新索引时自动下载内置素材（约 143MB），让图库不再是 0 张；关掉可用 bq下载表情包 手动拉取",
         data=True,
     ),
     "mcbq_builtin_pack_url": GsStrConfig(
