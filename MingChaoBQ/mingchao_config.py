@@ -34,6 +34,7 @@ StrKey = Literal[
     "mcbq_api_token",
     "mcbq_api_random_path",
     "mcbq_api_character_param",
+    "mcbq_api_timeout",
     "mcbq_poke_set_pm",
     "mcbq_upload_pm",
     "mcbq_index_update_hour",

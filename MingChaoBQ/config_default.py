@@ -56,6 +56,11 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="开启后所有指令优先从 API 获取，失败时回退本地",
         data=False,
     ),
+    "mcbq_api_timeout": GsStrConfig(
+        title="API 等待上限（秒）",
+        desc="超过这个时间还没拿到 API 图就立刻改用本地，避免戳一戳/随机表情卡住；填 0 表示不限制，默认3",
+        data="3",
+    ),
     "mcbq_api_base": GsStrConfig(
         title="API 地址",
         desc="默认 https://emoji.wuwa.games/apis/api.random-emoji.wuwa.games",

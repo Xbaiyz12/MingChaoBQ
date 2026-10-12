@@ -103,10 +103,24 @@ async def _send_pic(bot: Bot, pic: PicEntry) -> None:
 
 
 async def _try_api(role: str = "") -> ApiPic | None:
-    """从 API 获取一张，返回 {"url", "name", "role", ...} 或 None"""
+    """从 API 获取一张，返回 {"url", "name", "role", ...} 或 None。
+
+    超过「API 等待上限」秒就放弃并返回 None，让调用方立刻回退本地：实测 API
+    首字节可达 17 秒，不设上限会把戳一戳拖到十几秒才出图。填 0 表示不限制。
+    """
     if not get_bool("mcbq_api_enable"):
         return None
-    return await fetch_and_save(role=role)
+
+    limit = get_int("mcbq_api_timeout", 3)
+    if limit <= 0:
+        return await fetch_and_save(role=role)
+
+    try:
+        async with asyncio.timeout(limit):
+            return await fetch_and_save(role=role)
+    except TimeoutError:
+        logger.warning(f"[MingChaoBQ·API] 等待超过 {limit}s，改用本地")
+        return None
 
 
 async def _send_from_api(bot: Bot, data: ApiPic) -> None:
