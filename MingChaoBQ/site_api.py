@@ -177,6 +177,17 @@ async def list_packs_by_character(character: str, limit: int = _MAX_SIZE) -> lis
     return [p for p in (_parse_pack(item) for item in items) if p is not None]
 
 
+async def list_packs(page: int = 1, size: int = _MAX_SIZE) -> list[SitePack]:
+    """全站表情包（分页，共 300+ 个）。"""
+    data = await _get_json("packs", {"page": str(max(1, page)), "size": str(min(size, _MAX_SIZE))})
+    if not isinstance(data, dict):
+        return []
+    items = data.get("items")
+    if not isinstance(items, list):
+        return []
+    return [p for p in (_parse_pack(item) for item in items) if p is not None]
+
+
 def _names(raw: object) -> list[str]:
     if not isinstance(raw, list):
         return []

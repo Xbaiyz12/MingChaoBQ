@@ -425,8 +425,12 @@ async def cmd_sublist(bot: Bot, ev: Event) -> None:
         return
 
     keyword = ev.text.strip()
+    # on_suffix「列表」会抢在 on_command 前面，这两个等同名命令要在这里转回去
     if not keyword:
-        await bot.send("请指定画师或角色名，例如：bq捏捏列表")
+        await cmd_all_list(bot, ev)
+        return
+    if keyword in _ARTIST_LIST_KEYS:
+        await cmd_artist_list(bot, ev)
         return
 
     index = await load_index()
@@ -472,6 +476,8 @@ _SITE_FETCH_MAX = 100
 _SITE_CONCURRENCY = 5
 # 小站清单翻页上限（每页 50 条）
 _SITE_MAX_PAGES = 20
+# 这些写法等同「画师榜」；因为 on_suffix「列表」会抢先，得在 cmd_sublist 里转回去
+_ARTIST_LIST_KEYS = {"画师", "画师榜", "画师列表", "小站画师"}
 
 
 def _site_fetch_max() -> int:
@@ -796,7 +802,7 @@ async def cmd_fetch_artist(bot: Bot, ev: Event) -> None:
     await _fetch_by_emojis(bot, hit["name"], artist=hit["name"], want=want, total_hint=hit["count"])
 
 
-@mcbq_sv.on_command(("画师列表", "小站画师"), to_ai="查看呜哇小站上的画师列表")
+@mcbq_sv.on_command(("画师榜", "小站画师"), to_ai="查看呜哇小站上的画师榜图")
 async def cmd_artist_list(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
         return
@@ -811,8 +817,26 @@ async def cmd_artist_list(bot: Bot, ev: Event) -> None:
     await bot.send(MessageSegment.image(image))
 
 
+async def _find_site_pack(key: str) -> site_api.SitePack | None:
+    """按 slug 或标题找包。packs 接口不支持关键字搜索，只能全量翻页本地匹配。"""
+    needle = key.strip().lower()
+    if not needle:
+        return None
+    for page in range(1, 5):
+        packs = await site_api.list_packs(page=page, size=100)
+        if not packs:
+            break
+        for pack in packs:
+            if pack["slug"].lower() == needle:
+                return pack
+        for pack in packs:
+            if needle in pack["title"].strip().lower():
+                return pack
+    return None
+
+
 @mcbq_admin_sv.on_command(
-    ("拉取表情包", "拉取包", "按包拉取"),
+    ("拉取表情包", "拉取包", "小站拉包"),
     to_ai="从呜哇小站按指定表情包拉取表情到本地（仅主人可用）",
 )
 async def cmd_fetch_pack(bot: Bot, ev: Event) -> None:
@@ -826,11 +850,7 @@ async def cmd_fetch_pack(bot: Bot, ev: Event) -> None:
     if len(args) > 1 and args[1].isdigit():
         want = min(max(int(args[1]), 1), _site_fetch_max())
 
-    packs = await site_api.list_packs_by_character(key, limit=20)
-    hit = next(
-        (p for p in packs if p["slug"] == key or p["title"].strip() == key or key in p["title"]),
-        None,
-    )
+    hit = await _find_site_pack(key)
     if hit is None:
         await bot.send(f"没有找到表情包「{key}」，可先用 bq网站搜索 {key} 看看包名。")
         return
@@ -1089,7 +1109,7 @@ async def update_index(bot: Bot, ev: Event) -> None:
 
 
 @mcbq_admin_sv.on_command(
-    ("下载表情包", "下载内置表情", "拉取表情包"),
+    ("下载表情包", "下载内置表情", "重装内置表情"),
     to_ai="下载内置表情包素材并重建索引（仅主人可用）",
 )
 async def download_builtin_pack(bot: Bot, ev: Event) -> None:
