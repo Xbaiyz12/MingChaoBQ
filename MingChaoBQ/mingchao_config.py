@@ -25,6 +25,8 @@ BoolKey = Literal[
     "mcbq_burst_forward",
     "mcbq_index_auto_update",
     "mcbq_builtin_auto_fetch",
+    "mcbq_site_enable",
+    "mcbq_site_random_fallback",
 ]
 
 StrKey = Literal[
@@ -37,6 +39,7 @@ StrKey = Literal[
     "mcbq_api_character_param",
     "mcbq_api_timeout",
     "mcbq_builtin_pack_url",
+    "mcbq_site_fetch_max",
     "mcbq_poke_set_pm",
     "mcbq_upload_pm",
     "mcbq_index_update_hour",

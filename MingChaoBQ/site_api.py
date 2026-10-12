@@ -10,6 +10,8 @@ import aiohttp
 
 from gsuid_core.logger import logger
 
+from .mingchao_config import get_bool
+
 SITE_API = "https://emoji.wuwa.games/apis/api.random-emoji.wuwa.games/v1alpha1"
 # 站点接口的 size 上限：characters/artists/packs 是 100，emojis 是 50
 _MAX_SIZE = 100
@@ -111,6 +113,8 @@ def _parse_pack(raw: object) -> SitePack | None:
 
 
 async def _get_json(path: str, params: dict[str, str]) -> object | None:
+    if not get_bool("mcbq_site_enable"):
+        return None
     url = f"{SITE_API}/{path}"
     timeout = aiohttp.ClientTimeout(total=15)
     try:

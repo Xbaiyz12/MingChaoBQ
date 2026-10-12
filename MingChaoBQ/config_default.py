@@ -97,6 +97,22 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="留空使用默认的 GitHub Release 地址；换成国内镜像时填直链 zip",
         data="",
     ),
+    # ===== 呜哇小站接口 =====
+    "mcbq_site_enable": GsBoolConfig(
+        title="启用小站接口",
+        desc="开启后可用 bq网站搜索 / bq画师列表 / bq拉取角色 等（呜哇小站免费表情包仓库），关闭则全部停用",
+        data=True,
+    ),
+    "mcbq_site_fetch_max": GsStrConfig(
+        title="单次拉取上限（张）",
+        desc="bq拉取角色 / bq拉取画师 / bq拉取表情包 一次最多拉多少张，默认100，填 0 表示不限制",
+        data="100",
+    ),
+    "mcbq_site_random_fallback": GsBoolConfig(
+        title="本地没有时向小站取图",
+        desc="bq随机表情 在本地找不到时，直接用关键词向小站要一张（按角色或画师），关掉则只给提示",
+        data=True,
+    ),
     # ===== 戳一戳 =====
     "mcbq_poke_enable": GsBoolConfig(
         title="启用戳一戳随机表情",

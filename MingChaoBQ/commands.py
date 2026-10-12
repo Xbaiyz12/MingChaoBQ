@@ -31,6 +31,7 @@ from .index_generator import count_pics, load_index, rebuild_index
 from .mingchao_config import get_int, get_bool, set_config, get_str_list
 from .utils.user_names import resolve_profiles, fill_missing_profiles
 from .utils.index_types import Index, PicEntry
+from .utils.render_site import render_site_search, render_site_artists
 from .utils.render_search import MAX_LIST_ITEMS, render_emotion_list
 from .utils.render_overview import render_artist_overview
 from .mingchao_help.get_help import get_help
@@ -465,12 +466,18 @@ def _parse_emotion_choice(text: str, total: int) -> int | None:
 
 # 画师名下列表时，每个角色最多展示几个
 _PER_CHAR_LIMIT = 10
-# 「拉取」一次最多拉多少张（逐张请请求很慢，太多会刷屏）
+# 「拉取」单次上限的默认值，实际以控制台配置 mcbq_site_fetch_max 为准
 _SITE_FETCH_MAX = 100
 # 小站图片下载并发数（ticket 有时效，串行会过期）
 _SITE_CONCURRENCY = 5
 # 小站清单翻页上限（每页 50 条）
 _SITE_MAX_PAGES = 20
+
+
+def _site_fetch_max() -> int:
+    """单次拉取上限，配置里填 0 表示不限制。"""
+    limit = get_int("mcbq_site_fetch_max", _SITE_FETCH_MAX)
+    return limit if limit > 0 else 100_000
 
 
 def _sample_by_char(pics: list[PicEntry], per_char: int, limit: int) -> list[PicEntry]:
@@ -589,8 +596,32 @@ async def cmd_random(bot: Bot, ev: Event) -> None:
             await _send_pic(bot, random.choice(pics))
             return
 
+    data = await _try_site_random(keyword)
+    if data is not None:
+        await _send_from_api(bot, data)
+        return
+
     hint = await _site_hint(keyword)
     await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。{hint}")
+
+
+async def _try_site_random(keyword: str) -> ApiPic | None:
+    """本地没有时向小站要一张：先认角色，再认画师（都要求名字完全对上）。"""
+    if not keyword.strip() or not get_bool("mcbq_site_random_fallback"):
+        return None
+
+    chars = await site_api.search_characters(keyword, limit=5)
+    hit = next((c for c in chars if c["name"] == keyword), None)
+    if hit is not None:
+        logger.info(f"[MingChaoBQ·小站] 本地没有「{keyword}」，向小站按角色取图")
+        return await fetch_and_save(role=hit["name"])
+
+    artists = await site_api.list_artists(limit=100)
+    artist = next((a for a in artists if a["name"] == keyword), None)
+    if artist is not None:
+        logger.info(f"[MingChaoBQ·小站] 本地没有「{keyword}」，向小站按画师取图")
+        return await fetch_and_save(artist=artist["name"])
+    return None
 
 
 async def _site_hint(keyword: str) -> str:
@@ -637,6 +668,9 @@ async def cmd_site_search(bot: Bot, ev: Event) -> None:
     lines.append(f"\n拉到本地：bq拉取角色 {keyword} 30")
     lines.append("按画师拉取：bq拉取画师 <画师名> 30")
     await bot.send("\n".join(lines))
+
+    image = await render_site_search(keyword, chars, packs)
+    await bot.send(MessageSegment.image(image))
 
 
 async def _download_site_emojis(items: list[site_api.SiteEmoji], save_dir: Path) -> int:
@@ -711,7 +745,7 @@ async def cmd_fetch_role(bot: Bot, ev: Event) -> None:
     role = args[0]
     want = 20
     if len(args) > 1 and args[1].isdigit():
-        want = min(max(int(args[1]), 1), _SITE_FETCH_MAX)
+        want = min(max(int(args[1]), 1), _site_fetch_max())
 
     chars = await site_api.search_characters(role, limit=5)
     hit = next((c for c in chars if c["name"] == role), chars[0] if chars else None)
@@ -735,14 +769,27 @@ async def cmd_fetch_artist(bot: Bot, ev: Event) -> None:
 
     artist = args[0]
     want = 20
-    if len(args) > 1 and args[1].isdigit():
-        want = min(max(int(args[1]), 1), _SITE_FETCH_MAX)
+    character = ""
+    # 形如：bq拉取画师 <画师> [角色] [张数]
+    if len(args) > 1:
+        if args[1].isdigit():
+            want = min(max(int(args[1]), 1), _site_fetch_max())
+        else:
+            character = args[1]
+            if len(args) > 2 and args[2].isdigit():
+                want = min(max(int(args[2]), 1), _site_fetch_max())
 
     artists = await site_api.list_artists(limit=100)
     hit = next((a for a in artists if a["name"] == artist), None)
     if hit is None:
         near = "、".join(a["name"] for a in artists[:10])
         await bot.send(f"小站上没有叫「{artist}」的画师。部分画师：{near}（可用 bq画师列表 看全部）")
+        return
+
+    if character:
+        label = f"{hit['name']} 画的 {character}"
+        await bot.send(f"📥 开始拉取「{label}」：目标 {want} 张，请稍候…")
+        await _fetch_by_emojis(bot, label, character=character, artist=hit["name"], want=want)
         return
 
     await bot.send(f"📥 开始按画师拉取「{hit['name']}」：目标 {want} 张，小站共 {hit['count']} 张，请稍候…")
@@ -760,11 +807,8 @@ async def cmd_artist_list(bot: Bot, ev: Event) -> None:
         return
 
     ordered = sorted(artists, key=lambda a: a["count"], reverse=True)
-    lines = [f"🎨 呜哇小站画师榜（共 {len(ordered)} 位）"]
-    for idx, item in enumerate(ordered[:20], 1):
-        lines.append(f"{idx:>2}. {item['name']}：{item['count']} 张 · {item['packCount']} 个包")
-    lines.append("\n按画师拉取：bq拉取画师 <画师名> 30")
-    await bot.send("\n".join(lines))
+    image = await render_site_artists(ordered)
+    await bot.send(MessageSegment.image(image))
 
 
 @mcbq_admin_sv.on_command(
@@ -780,7 +824,7 @@ async def cmd_fetch_pack(bot: Bot, ev: Event) -> None:
     key = args[0]
     want = 20
     if len(args) > 1 and args[1].isdigit():
-        want = min(max(int(args[1]), 1), _SITE_FETCH_MAX)
+        want = min(max(int(args[1]), 1), _site_fetch_max())
 
     packs = await site_api.list_packs_by_character(key, limit=20)
     hit = next(
