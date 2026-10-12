@@ -653,67 +653,53 @@ async def cmd_burst(bot: Bot, ev: Event) -> None:
     count, keyword = _parse_burst_args(ev.command, ev.text)
     index = await load_index()
 
+    matched_chars: list[str] = []
     if not keyword:
-        pics = _collect_all_pics(index)
-        if not pics:
-            data_list: list[ApiPic] = []
-            for _ in range(count):
-                d = await _try_api()
-                if d is not None:
-                    data_list.append(d)
-            if not data_list:
-                await bot.send("表情包库是空的，请先运行 bq更新索引。")
-                return
-            await _send_burst_items(bot, data_list)
-            return
+        candidates = _collect_all_pics(index)
+    else:
+        matched_chars = _match_chars(index, keyword)
+        matched_artists = _match_artists(index, keyword)
+        matched_emotions = _match_emotions(index, keyword, fuzzy=False)
+        matched_emotions_fuzzy = matched_emotions or _match_emotions(index, keyword, fuzzy=True)
 
-        chosen = random.sample(pics, min(count, len(pics)))
-        await _send_burst_items(bot, chosen)
-        return
+        candidates = []
+        for p_list in (
+            [pic for c in matched_chars for pic in _collect_all_pics(index, char=c)],
+            [pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)],
+            matched_emotions,
+            matched_emotions_fuzzy,
+        ):
+            if p_list:
+                candidates = p_list
+                break
 
-    matched_chars = _match_chars(index, keyword)
-    matched_artists = _match_artists(index, keyword)
-    matched_emotions = _match_emotions(index, keyword, fuzzy=False)
-    matched_emotions_fuzzy = matched_emotions or _match_emotions(index, keyword, fuzzy=True)
+        if not candidates:
+            fuzzy_chars = _match_chars_fuzzy(index, keyword)
+            if fuzzy_chars:
+                candidates = [pic for c in fuzzy_chars for pic in _collect_all_pics(index, char=c)]
 
-    candidates: list[PicEntry] = []
-    for p_list in (
-        [pic for c in matched_chars for pic in _collect_all_pics(index, char=c)],
-        [pic for a in matched_artists for pic in _collect_all_pics(index, artist=a)],
-        matched_emotions,
-        matched_emotions_fuzzy,
-    ):
-        if p_list:
-            candidates = p_list
-            break
-
-    if not candidates:
-        fuzzy_chars = _match_chars_fuzzy(index, keyword)
-        if fuzzy_chars:
-            candidates = [pic for c in fuzzy_chars for pic in _collect_all_pics(index, char=c)]
-
-    if candidates and (len(candidates) >= count or not get_bool("mcbq_api_enable")):
-        chosen = random.sample(candidates, min(count, len(candidates)))
-        await _send_burst_items(bot, chosen)
-        return
-
+    # 连发优先 API：先按张数向 API 要，拿不满（关闭或失败）再用本地补差额
     role_param = matched_chars[0] if matched_chars else keyword
-    api_results: list[ApiPic] = []
+    items: list[PicEntry | ApiPic] = []
     if get_bool("mcbq_api_enable"):
         for _ in range(count):
-            d = await _try_api(role=role_param)
-            if d is not None:
-                api_results.append(d)
+            data = await _try_api(role=role_param)
+            if data is None:
+                break
+            items.append(data)
 
-    if api_results:
-        await _send_burst_items(bot, api_results)
+    if len(items) < count and candidates:
+        need = count - len(items)
+        items.extend(random.sample(candidates, min(need, len(candidates))))
+
+    if not items:
+        if keyword:
+            await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
+        else:
+            await bot.send("表情包库是空的，请先运行 bq更新索引。")
         return
 
-    if candidates:
-        await _send_burst_items(bot, candidates)
-        return
-
-    await bot.send(f"没有找到「{keyword}」相关的画师、角色或表情。发送 bq列表 查看全部。")
+    await _send_burst_items(bot, items)
 
 
 @mcbq_sv.on_command(("本地表情", "本地来一张"), to_ai="只从本地表情库随机发一张（跳过 API），可跟关键词")
