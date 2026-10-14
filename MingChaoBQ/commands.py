@@ -862,6 +862,49 @@ async def cmd_fetch_artist(bot: Bot, ev: Event) -> None:
     await _fetch_by_emojis(bot, hit["name"], artist=hit["name"], want=want, total_hint=hit["count"])
 
 
+def _norm_artist(name: str) -> str:
+    """画师名归一化：去掉空白与符号再小写，站点的「春也Huruya」才能对上本地「春也haruya」。"""
+    return re.sub(r"[\s\-_·&.]+", "", name).casefold()
+
+
+def _local_artist_counts(index: Index) -> dict[str, int]:
+    """本地每位画师有多少张。"""
+    counts: dict[str, int] = {}
+    for artist, chars in index.items():
+        counts[artist] = sum(len(pics) for subs in chars.values() for pics in subs.values())
+    return counts
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    limit = min(len(a), len(b))
+    index = 0
+    while index < limit and a[index] == b[index]:
+        index += 1
+    return index
+
+
+def _match_local_artist(site_name: str, local: dict[str, int]) -> int:
+    """把站点画师名对到本地已有张数。
+
+    两侧名字对不齐是常态（站点「春也Huruya」对本地「春也haruya」、「嗷懒叽」对
+    「嗷懒叽oranJ」、「猫屋敷梨梨&春也Haruya」对「猫屋敷梨梨」），所以依次尝试：
+    精确 -> 归一化相等 -> 互相包含 -> 公共前缀 >= 2。名字短于 2 字不参与模糊匹配。
+    """
+    if site_name in local:
+        return local[site_name]
+    needle = _norm_artist(site_name)
+    if len(needle) < 2:
+        return 0
+    total = 0
+    for artist, count in local.items():
+        key = _norm_artist(artist)
+        if len(key) < 2:
+            continue
+        if key == needle or needle in key or key in needle or _common_prefix_len(key, needle) >= 2:
+            total += count
+    return total
+
+
 @mcbq_sv.on_command(("画师榜", "小站画师"), to_ai="查看呜哇小站上的画师榜图")
 async def cmd_artist_list(bot: Bot, ev: Event) -> None:
     if not is_group_allowed(ev.group_id):
@@ -872,8 +915,11 @@ async def cmd_artist_list(bot: Bot, ev: Event) -> None:
         await bot.send("暂时取不到小站画师列表，稍后再试。")
         return
 
+    index = await load_index()
+    local = _local_artist_counts(index)
+    counts = {item["name"]: _match_local_artist(item["name"], local) for item in artists}
     ordered = sorted(artists, key=lambda a: a["count"], reverse=True)
-    image = await render_site_artists(ordered)
+    image = await render_site_artists(ordered, counts)
     await bot.send(MessageSegment.image(image))
 
 
