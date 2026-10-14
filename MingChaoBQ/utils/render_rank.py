@@ -13,6 +13,7 @@ from .image_utils import fit_text, get_font
 WIDTH = 980
 PADDING = 32
 ROW_HEIGHT = 76
+GROUP_HEIGHT = 46
 MAX_ROWS = 30
 AVATAR_SIZE = 52
 ACCENT = (74, 144, 217)
@@ -49,20 +50,31 @@ def render_rank(
     dim: set[str] | None = None,
     summary_extra: str = "",
     keep_order: bool = False,
+    group_of: dict[str, str] | None = None,
 ) -> Path:
     """渲染一张榜单图。labels 给某行加主/副标题，avatars 有则显示圆形头像。
 
     dim 里的名字整行画成浅色（用于「本地还没有、需要拉取」这类对比）；
-    keep_order=True 时按传入顺序展示，不再按数量重排。
+    keep_order=True 时按传入顺序展示，不再按数量重排；
+    group_of 给出每行的分组名，分组变化处会插一条带色条的小标题。
     """
     shown = rows[:MAX_ROWS] if keep_order else sorted_rows(rows)[:MAX_ROWS]
-    height = PADDING * 2 + 100 + len(shown) * ROW_HEIGHT
+    group_row_count = 0
+    if group_of:
+        seen_groups: list[str] = []
+        for name, _ in shown:
+            label = group_of.get(name, "")
+            if label and (not seen_groups or seen_groups[-1] != label):
+                seen_groups.append(label)
+        group_row_count = len(seen_groups)
+    height = PADDING * 2 + 100 + len(shown) * ROW_HEIGHT + group_row_count * GROUP_HEIGHT
     image = build_canvas(WIDTH, height)
     draw = ImageDraw.Draw(image)
     title_font = get_font(36)
     name_font = get_font(24)
     count_font = get_font(24)
     muted_font = get_font(18)
+    group_font = get_font(22)
     draw.rounded_rectangle(
         (PADDING, PADDING, WIDTH - PADDING, PADDING + 82),
         radius=18,
@@ -76,9 +88,23 @@ def render_rank(
     if summary_extra:
         summary = f"{summary} · {summary_extra}"
     draw.text((PADDING + 26, PADDING + 62), summary, font=muted_font, fill=MUTED)
-    top = PADDING + 100
+    cursor = PADDING + 100
+    current_group = ""
     for index, (name, count) in enumerate(shown):
-        y = top + index * ROW_HEIGHT
+        group = group_of.get(name, "") if group_of else ""
+        if group and group != current_group:
+            is_dim_group = dim is not None and name in dim
+            bar = DIM_ACCENT if is_dim_group else ACCENT
+            draw.rectangle((PADDING, cursor + 10, PADDING + 6, cursor + 34), fill=bar)
+            draw.text(
+                (PADDING + 18, cursor + 8),
+                group,
+                font=group_font,
+                fill=DIM_TEXT if is_dim_group else ACCENT,
+            )
+            cursor += GROUP_HEIGHT
+            current_group = group
+        y = cursor
         is_dim = dim is not None and name in dim
         text_color = DIM_TEXT if is_dim else TEXT
         accent_color = DIM_ACCENT if is_dim else ACCENT
@@ -109,6 +135,7 @@ def render_rank(
         count_text = f"{count} {unit}"
         count_width = round(count_font.getlength(count_text))
         draw.text((WIDTH - PADDING - 20 - count_width, y + 18), count_text, font=count_font, fill=accent_color)
+        cursor += ROW_HEIGHT
     clean_cache()
     path = new_cache_path(prefix, ".jpg")
     image.save(path, format="JPEG", quality=88, optimize=True)

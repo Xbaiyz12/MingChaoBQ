@@ -32,6 +32,7 @@ async def render_site_artists(artists: list[SiteArtist], local_counts: dict[str,
     rows: list[tuple[str, int]] = []
     labels: dict[str, tuple[str, str]] = {}
     dim: set[str] = set()
+    group_of: dict[str, str] = {}
     have = 0
     for item in ordered:
         name = item["name"]
@@ -40,11 +41,24 @@ async def render_site_artists(artists: list[SiteArtist], local_counts: dict[str,
         if mine > 0:
             have += 1
             labels[name] = (name, f"{item['packCount']} 个包 · 本地已有 {mine} 张")
+            group_of[name] = "本地已有（无需拉取）"
         else:
             dim.add(name)
             labels[name] = (name, f"{item['packCount']} 个包 · 需拉取")
+            group_of[name] = "小站还有 · 可拉取"
     extra = f"本地已有 {have} 位 · 需拉取 {len(rows) - have} 位"
-    return await render_rank("呜哇小站 · 画师榜", rows, "site-artists", "张", labels, None, dim, extra, keep_order=True)
+    return await render_rank(
+        "呜哇小站 · 画师榜",
+        rows,
+        "site-artists",
+        "张",
+        labels,
+        None,
+        dim,
+        extra,
+        keep_order=True,
+        group_of=group_of,
+    )
 
 
 async def render_site_search(keyword: str, chars: list[SiteCharacter], packs: list[SitePack]) -> Path:
