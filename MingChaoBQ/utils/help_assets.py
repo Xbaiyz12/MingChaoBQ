@@ -96,7 +96,7 @@ def build_canvas(width: int, height: int, config_key: StrKey = "mcbq_help_bg") -
     left = (image.width - width) // 2
     top = (image.height - height) // 2
     image = image.crop((left, top, left + width, top + height))
-    veil = Image.new("RGBA", image.size, (244, 250, 255, 220))
+    veil = Image.new("RGBA", image.size, (244, 250, 255, 206))
     return Image.alpha_composite(image.convert("RGBA"), veil).convert("RGB")
 
 

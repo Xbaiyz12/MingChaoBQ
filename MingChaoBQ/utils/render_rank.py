@@ -16,13 +16,14 @@ ROW_HEIGHT = 76
 GROUP_HEIGHT = 46
 MAX_ROWS = 30
 AVATAR_SIZE = 52
-ACCENT = (74, 144, 217)
-TEXT = (38, 64, 92)
-MUTED = (118, 148, 178)
-# 名字在 dim 里的行用这套颜色，表示「本地还没有、建议拉取」
-DIM_TEXT = (172, 188, 204)
-DIM_ACCENT = (190, 205, 218)
-DIM_FILL = (249, 252, 254)
+ACCENT = (44, 118, 202)
+TEXT = (20, 42, 70)
+MUTED = (90, 124, 160)
+# 底板是近白的，dim 行颜色太浅会糊掉，这里保证在行底上仍有约 4.5:1
+DIM_TEXT = (92, 118, 148)
+DIM_ACCENT = (106, 134, 164)
+DIM_FILL = (233, 240, 248)
+ZEBRA_FILL = (226, 239, 252)
 
 
 def sorted_rows(rows: list[tuple[str, int]]) -> list[tuple[str, int]]:
@@ -108,12 +109,12 @@ def render_rank(
         is_dim = dim is not None and name in dim
         text_color = DIM_TEXT if is_dim else TEXT
         accent_color = DIM_ACCENT if is_dim else ACCENT
-        fill = DIM_FILL if is_dim else ((255, 255, 255) if index % 2 == 0 else (237, 246, 255))
+        fill = DIM_FILL if is_dim else ((255, 255, 255) if index % 2 == 0 else ZEBRA_FILL)
         draw.rounded_rectangle(
             (PADDING, y, WIDTH - PADDING, y + ROW_HEIGHT - 8),
             radius=12,
             fill=fill,
-            outline=(198, 216, 232) if is_dim else (158, 200, 238),
+            outline=(204, 219, 234) if is_dim else (150, 194, 236),
         )
         draw.text((PADDING + 18, y + 18), f"{index + 1}", font=muted_font, fill=accent_color)
         text_x = PADDING + 70
