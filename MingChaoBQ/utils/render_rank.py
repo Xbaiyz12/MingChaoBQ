@@ -48,12 +48,14 @@ def render_rank(
     avatars: dict[str, Image.Image] | None = None,
     dim: set[str] | None = None,
     summary_extra: str = "",
+    keep_order: bool = False,
 ) -> Path:
     """渲染一张榜单图。labels 给某行加主/副标题，avatars 有则显示圆形头像。
 
-    dim 里的名字整行画成浅色（用于「本地还没有、需要拉取」这类对比）。
+    dim 里的名字整行画成浅色（用于「本地还没有、需要拉取」这类对比）；
+    keep_order=True 时按传入顺序展示，不再按数量重排。
     """
-    shown = sorted_rows(rows)[:MAX_ROWS]
+    shown = rows[:MAX_ROWS] if keep_order else sorted_rows(rows)[:MAX_ROWS]
     height = PADDING * 2 + 100 + len(shown) * ROW_HEIGHT
     image = build_canvas(WIDTH, height)
     draw = ImageDraw.Draw(image)

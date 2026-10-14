@@ -18,27 +18,33 @@ def _pack_rows(packs: list[SitePack]) -> list[tuple[str, int]]:
 
 
 async def render_site_artists(artists: list[SiteArtist], local_counts: dict[str, int] | None = None) -> Path:
-    """小站画师榜（按表情数降序）。
+    """小站画师榜：本地已有的一律排到最前面，组内按表情数降序。
 
     local_counts 是「本地已有的画师 -> 张数」，命中就整行高亮并标注已有多少张，
     没命中的行暗淡并标注「需拉取」。
     """
     local = local_counts or {}
-    shown = [(item["name"], item["count"]) for item in artists][:_MAX_ARTIST_ROWS]
+    ordered = sorted(
+        artists,
+        key=lambda a: (0 if local.get(a["name"], 0) > 0 else 1, -a["count"], a["name"]),
+    )[:_MAX_ARTIST_ROWS]
+
+    rows: list[tuple[str, int]] = []
     labels: dict[str, tuple[str, str]] = {}
     dim: set[str] = set()
     have = 0
-    for name, _ in shown:
-        packs = next((item["packCount"] for item in artists if item["name"] == name), 0)
+    for item in ordered:
+        name = item["name"]
+        rows.append((name, item["count"]))
         mine = local.get(name, 0)
         if mine > 0:
             have += 1
-            labels[name] = (name, f"{packs} 个包 · 本地已有 {mine} 张")
+            labels[name] = (name, f"{item['packCount']} 个包 · 本地已有 {mine} 张")
         else:
             dim.add(name)
-            labels[name] = (name, f"{packs} 个包 · 需拉取")
-    extra = f"本地已有 {have} 位 · 需拉取 {len(shown) - have} 位"
-    return await render_rank("呜哇小站 · 画师榜", shown, "site-artists", "张", labels, None, dim, extra)
+            labels[name] = (name, f"{item['packCount']} 个包 · 需拉取")
+    extra = f"本地已有 {have} 位 · 需拉取 {len(rows) - have} 位"
+    return await render_rank("呜哇小站 · 画师榜", rows, "site-artists", "张", labels, None, dim, extra, keep_order=True)
 
 
 async def render_site_search(keyword: str, chars: list[SiteCharacter], packs: list[SitePack]) -> Path:
