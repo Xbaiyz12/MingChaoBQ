@@ -51,6 +51,7 @@ ListKey = Literal[
     "mcbq_blacklist",
     "mcbq_char_alias",
     "mcbq_poke_group_roles",
+    "mcbq_block_list",
 ]
 
 ConfigKey = BoolKey | StrKey | ListKey

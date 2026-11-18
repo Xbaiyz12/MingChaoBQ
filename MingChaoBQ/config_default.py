@@ -113,6 +113,11 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         desc="bq随机表情 在本地找不到时，直接用关键词向小站要一张（按角色或画师），关掉则只给提示",
         data=True,
     ),
+    "mcbq_block_list": GsListStrConfig(
+        title="屏蔽表情关键词",
+        desc="拉取和随机时跳过命中这些词的网站表情。匹配表情id、包名、角色名、画师名，一行一个",
+        data=[],
+    ),
     # ===== 戳一戳 =====
     "mcbq_poke_enable": GsBoolConfig(
         title="启用戳一戳随机表情",

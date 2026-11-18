@@ -10,6 +10,7 @@ import aiohttp
 
 from gsuid_core.logger import logger
 
+from .blocklist import is_blocked
 from .mingchao_config import get_bool
 
 SITE_API = "https://emoji.wuwa.games/apis/api.random-emoji.wuwa.games/v1alpha1"
@@ -243,4 +244,6 @@ async def list_emojis(
     items = data.get("items")
     if not isinstance(items, list):
         return []
-    return [e for e in (_parse_emoji(item) for item in items) if e is not None]
+    parsed = [e for e in (_parse_emoji(item) for item in items) if e is not None]
+    # 屏蔽词命中就不返回，调用方翻页时会自动补足数量
+    return [e for e in parsed if not is_blocked(e["id"], e["character"], e["artist"], e["pack_title"])]

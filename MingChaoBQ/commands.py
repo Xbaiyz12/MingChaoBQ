@@ -23,6 +23,7 @@ from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 
 from . import site_api
 from .api_sync import API_DIR_NAME, file_md5, safe_name, fetch_and_save, clean_tmp_files, download_to_url
+from .blocklist import is_blocked
 from .whitelist import get_group_role, set_group_role, is_group_allowed
 from .api_client import ApiPic
 from .statistics import record_poke, record_role, get_statistics
@@ -107,6 +108,18 @@ async def _send_pic(bot: Bot, pic: PicEntry) -> None:
     await record_role(_char_of(pic))
 
 
+async def _fetch_unblocked(role: str = "", artist: str = "", pack: str = "") -> ApiPic | None:
+    """取一张没被屏蔽词命中的图；API 每次都给不同的图，命中就重试几次。"""
+    for _ in range(3):
+        data = await fetch_and_save(role=role, artist=artist, pack=pack)
+        if data is None:
+            return None
+        if not is_blocked(data["name"], data["role"]):
+            return data
+        logger.info(f"[MingChaoBQ·屏蔽] 跳过 {data['name']}（{data['role']}）")
+    return None
+
+
 async def _try_api(role: str = "") -> ApiPic | None:
     """从 API 获取一张，返回 {"url", "name", "role", ...} 或 None。
 
@@ -118,11 +131,11 @@ async def _try_api(role: str = "") -> ApiPic | None:
 
     limit = get_int("mcbq_api_timeout", 3)
     if limit <= 0:
-        return await fetch_and_save(role=role)
+        return await _fetch_unblocked(role)
 
     try:
         async with asyncio.timeout(limit):
-            return await fetch_and_save(role=role)
+            return await _fetch_unblocked(role)
     except TimeoutError:
         logger.warning(f"[MingChaoBQ·API] 等待超过 {limit}s，改用本地")
         return None
@@ -624,13 +637,13 @@ async def _try_site_random(keyword: str) -> ApiPic | None:
     hit = next((c for c in chars if c["name"] == keyword), None)
     if hit is not None:
         logger.info(f"[MingChaoBQ·小站] 本地没有「{keyword}」，向小站按角色取图")
-        return await fetch_and_save(role=hit["name"])
+        return await _fetch_unblocked(role=hit["name"])
 
     artists = await site_api.list_artists(limit=100)
     artist = next((a for a in artists if a["name"] == keyword), None)
     if artist is not None:
         logger.info(f"[MingChaoBQ·小站] 本地没有「{keyword}」，向小站按画师取图")
-        return await fetch_and_save(artist=artist["name"])
+        return await _fetch_unblocked(artist=artist["name"])
     return None
 
 
@@ -973,7 +986,7 @@ async def cmd_fetch_pack(bot: Bot, ev: Event) -> None:
     rounds = 0
     while len(seen) < target_count and rounds < want * 3:
         rounds += 1
-        data = await fetch_and_save(pack=pack_slug)
+        data = await _fetch_unblocked(pack=pack_slug)
         if data is None:
             break
         seen.add(data["name"])
@@ -1199,6 +1212,53 @@ async def set_poke_role(bot: Bot, ev: Event) -> None:
 
 
 # ==================== 管理命令 ====================
+
+
+@mcbq_admin_sv.on_command(("屏蔽表情", "屏蔽词"), to_ai="按关键词屏蔽网站表情（仅主人可用）")
+async def cmd_block_add(bot: Bot, ev: Event) -> None:
+    word = ev.text.strip()
+    if not word:
+        await bot.send("请提供要屏蔽的关键词，例如：bq屏蔽表情 加载中")
+        return
+
+    words = get_str_list("mcbq_block_list")
+    if any(item.strip().casefold() == word.casefold() for item in words):
+        await bot.send(f"「{word}」已经在屏蔽列表里了。")
+        return
+    if not set_config("mcbq_block_list", [*words, word]):
+        await bot.send("写入配置失败，请稍后再试。")
+        return
+    await bot.send(f"已屏蔽含「{word}」的网站表情。\n拉取和随机都不会再取到它，本地已有的不受影响。")
+
+
+@mcbq_admin_sv.on_command(("解除屏蔽", "取消屏蔽"), to_ai="解除某个表情屏蔽词（仅主人可用）")
+async def cmd_block_remove(bot: Bot, ev: Event) -> None:
+    word = ev.text.strip()
+    if not word:
+        await bot.send("请提供要解除的关键词，例如：bq解除屏蔽 加载中")
+        return
+
+    words = get_str_list("mcbq_block_list")
+    kept = [item for item in words if item.strip().casefold() != word.casefold()]
+    if len(kept) == len(words):
+        await bot.send(f"屏蔽列表里没有「{word}」。")
+        return
+    if not set_config("mcbq_block_list", kept):
+        await bot.send("写入配置失败，请稍后再试。")
+        return
+    await bot.send(f"已解除对「{word}」的屏蔽。")
+
+
+@mcbq_admin_sv.on_command(("查看屏蔽", "屏蔽清单"), to_ai="查看当前的屏蔽词（仅主人可用）")
+async def cmd_block_show(bot: Bot, ev: Event) -> None:
+    words = get_str_list("mcbq_block_list")
+    if not words:
+        await bot.send("还没有屏蔽任何网站表情。用 bq屏蔽表情 <关键词> 添加。")
+        return
+    lines = [f"🚫 已屏蔽 {len(words)} 个关键词："]
+    lines.extend(f"  {item}" for item in words)
+    lines.append("\n解除：bq解除屏蔽 <关键词>")
+    await bot.send("\n".join(lines))
 
 
 @mcbq_admin_sv.on_command(("更新索引", "刷新图库", "重扫表情"), to_ai="重新扫描表情包目录并生成索引（仅主人可用）")
