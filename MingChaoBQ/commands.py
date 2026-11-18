@@ -114,9 +114,9 @@ async def _fetch_unblocked(role: str = "", artist: str = "", pack: str = "") -> 
         data = await fetch_and_save(role=role, artist=artist, pack=pack)
         if data is None:
             return None
-        if not is_blocked(data["name"], data["role"]):
+        if not is_blocked(data["name"], data["role"], data["pack_slug"]):
             return data
-        logger.info(f"[MingChaoBQ·屏蔽] 跳过 {data['name']}（{data['role']}）")
+        logger.info(f"[MingChaoBQ·屏蔽] 跳过 {data['name']}（{data['role']} / {data['pack_slug']}）")
     return None
 
 
@@ -1214,6 +1214,25 @@ async def set_poke_role(bot: Bot, ev: Event) -> None:
 # ==================== 管理命令 ====================
 
 
+async def _expand_block_words(word: str) -> list[str]:
+    """关键词命中的包 slug：random 接口只给 slug，中文标题在随机那条路上匹配不上。"""
+    needle = word.casefold()
+    slugs: list[str] = []
+    page = 1
+    while page <= 8:
+        packs = await site_api.list_packs(page=page, size=100)
+        if not packs:
+            break
+        for pack in packs:
+            if needle in pack["title"].casefold() or needle in pack["slug"].casefold():
+                if pack["slug"] not in slugs:
+                    slugs.append(pack["slug"])
+        if len(packs) < 100:
+            break
+        page += 1
+    return slugs
+
+
 @mcbq_admin_sv.on_command(("屏蔽表情", "屏蔽词"), to_ai="按关键词屏蔽网站表情（仅主人可用）")
 async def cmd_block_add(bot: Bot, ev: Event) -> None:
     word = ev.text.strip()
@@ -1222,13 +1241,27 @@ async def cmd_block_add(bot: Bot, ev: Event) -> None:
         return
 
     words = get_str_list("mcbq_block_list")
-    if any(item.strip().casefold() == word.casefold() for item in words):
+    slugs = await _expand_block_words(word)
+    known = {item.strip().casefold() for item in words}
+    missing = [slug for slug in slugs if slug.casefold() not in known]
+    already = word.casefold() in known
+    if already and not missing:
         await bot.send(f"「{word}」已经在屏蔽列表里了。")
         return
-    if not set_config("mcbq_block_list", [*words, word]):
+
+    merged = [*words]
+    if not already:
+        merged.append(word)
+        known.add(word.casefold())
+    merged.extend(missing)
+    if not set_config("mcbq_block_list", merged):
         await bot.send("写入配置失败，请稍后再试。")
         return
-    await bot.send(f"已屏蔽含「{word}」的网站表情。\n拉取和随机都不会再取到它，本地已有的不受影响。")
+    if already:
+        await bot.send(f"「{word}」此前只按文字匹配，已补上 {len(missing)} 个表情包 slug，随机也会跳过了。")
+        return
+    note = f"\n命中 {len(slugs)} 个表情包，已一并按 slug 屏蔽（随机接口只认 slug）。" if slugs else ""
+    await bot.send(f"已屏蔽含「{word}」的网站表情。{note}\n本地已有的不受影响。")
 
 
 @mcbq_admin_sv.on_command(("解除屏蔽", "取消屏蔽"), to_ai="解除某个表情屏蔽词（仅主人可用）")
@@ -1239,7 +1272,9 @@ async def cmd_block_remove(bot: Bot, ev: Event) -> None:
         return
 
     words = get_str_list("mcbq_block_list")
-    kept = [item for item in words if item.strip().casefold() != word.casefold()]
+    slugs = await _expand_block_words(word)
+    drop = {word.strip().casefold()} | {slug.casefold() for slug in slugs}
+    kept = [item for item in words if item.strip().casefold() not in drop]
     if len(kept) == len(words):
         await bot.send(f"屏蔽列表里没有「{word}」。")
         return

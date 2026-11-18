@@ -49,6 +49,8 @@ class ApiPicInfo(TypedDict):
     name: str
     role: str
     suffix: str
+    # random 不返回包名，只能从 sourceUrl 的 /archives/<slug> 里取包 slug
+    pack_slug: str
 
 
 class ApiPic(ApiPicInfo, total=False):
@@ -144,7 +146,13 @@ class BqApiClient:
         id_raw: object = data.get("id")
         name = str(id_raw) if isinstance(id_raw, (str, int)) else "未命名"
 
-        return ApiPicInfo(url=img_url, name=name, role=role_name, suffix=suffix)
+        # random 只给 sourceUrl（形如 .../archives/<包slug>），取出来供屏蔽词匹配
+        src_raw: object = data.get("sourceUrl")
+        pack_slug = ""
+        if isinstance(src_raw, str) and "/archives/" in src_raw:
+            pack_slug = src_raw.rsplit("/archives/", 1)[-1].strip("/").split("/")[0]
+
+        return ApiPicInfo(url=img_url, name=name, role=role_name, suffix=suffix, pack_slug=pack_slug)
 
     async def _download_by_curl(self, curl_bin: str, url: str, save_path: Path) -> bool:
         """
